@@ -1,10 +1,14 @@
 package mr
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"io/ioutil"
+	"os"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
-
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,7 +28,6 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
@@ -34,8 +37,45 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+	taskType, filename, err := RequestTask()
+	if err != nil {
+		return
+	}
 
+	switch taskType {
+	case "Map":
+		err := doMapTask(filename, mapf)
+		if err != nil {
+			return
+		}
+	}
+}
+
+func doMapTask(filename string, mapf func(string, string) []KeyValue) (err error) {
+	file, err := os.Open(filename)
+	fmt.Println(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	kva := mapf(filename, string(content))
+	fmt.Println(kva)
+	return err
+}
+
+func RequestTask() (taskType, filename string, err error) {
+	args := BaseRequest{}
+	reply := TaskRequestReply{}
+	ok := call("Coordinator.HandleTaskRequest", &args, &reply)
+	fmt.Println(reply)
+	if !ok {
+		return "", "", errors.New("request task failed")
+	}
+	return reply.TaskType, reply.FileName, nil
 }
 
 //
