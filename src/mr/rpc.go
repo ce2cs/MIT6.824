@@ -6,7 +6,10 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
+import (
+	"github.com/google/uuid"
+	"os"
+)
 import "strconv"
 
 //
@@ -27,14 +30,32 @@ type ExampleReply struct {
 type BaseRequest struct {
 }
 
+type TaskRequest struct {
+	BaseRequest
+	WorkerID uuid.UUID
+}
+
+type TaskReport struct {
+	BaseRequest
+	WorkerID uuid.UUID
+	Task
+}
+
 type BaseReply struct {
 	Error error
 }
 
 type TaskRequestReply struct {
 	BaseReply
-	TaskType string
-	FileName string
+	Task
+	ReducerNum int
+}
+
+type Task struct {
+	TaskID int
+	TaskStatus
+	TaskType
+	Resource string
 }
 
 // Cook up a unique-ish UNIX-domain socket name
