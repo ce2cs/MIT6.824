@@ -254,8 +254,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.WorkerStatus = make(map[uuid.UUID]WorkerStatus)
 	c.MapTaskStatus = make([]TaskStatus, c.MapperNum)
 	c.ReduceTaskStatus = make([]TaskStatus, c.ReducerNum)
-	c.WorkerResumeDuration = 10 * time.Second
-	c.MaxReplyDelay = 5 * time.Second
+	c.WorkerResumeDuration = 20 * time.Second
+	c.MaxReplyDelay = 10 * time.Second
 	_, err := os.Stat("reducer-sources")
 	if os.IsNotExist(err) {
 		err := os.Mkdir("reducer-sources", 0755)
