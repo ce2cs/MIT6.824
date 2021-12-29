@@ -20,6 +20,8 @@ import "sync"
 const RaftElectionTimeout = 1000 * time.Millisecond
 
 func TestInitialElection2A(t *testing.T) {
+	// WARNING: Delete when real test!!!
+	//rand.Seed(0)
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -51,6 +53,8 @@ func TestInitialElection2A(t *testing.T) {
 }
 
 func TestReElection2A(t *testing.T) {
+	// WARNING: Delete when real test!!!
+	//rand.Seed(0)
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -87,6 +91,8 @@ func TestReElection2A(t *testing.T) {
 }
 
 func TestManyElections2A(t *testing.T) {
+	// WARNING: Delete when real test!!!
+	//rand.Seed(0)
 	servers := 7
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="RemoteTargetsManager">
+    <option name="projectDefaultTargetUuid" value="1fead223-c049-4300-85e5-a0e802ca72bd" />
+    <targets>
+      <target name="boyang@192.168.126.128:22" type="ssh/sftp" uuid="1fead223-c049-4300-85e5-a0e802ca72bd">
+        <config>
+          <option name="projectRootOnTarget" value="/home/boyang/6.824" />
+          <option name="serverName" value="boyang@192.168.126.128:22 password" />
+          <option name="useRsync" value="true" />
+        </config>
+      </target>
+    </targets>
+  </component>
+</project>
