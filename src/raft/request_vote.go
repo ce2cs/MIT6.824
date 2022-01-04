@@ -1,5 +1,7 @@
 package raft
 
+import "time"
+
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	// required fields in fig 2
@@ -23,29 +25,31 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVoteHandler(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
-	rf.debugLog(LOG, "RequestVoteHandler", "Got vote request")
+	rf.debugLog(Lab2A, LOG, "RequestVoteHandler", "Got vote request")
 	defer rf.mu.Unlock()
 	rf.checkAndSetTerm(args.Term)
 	reply.Term = rf.currentTerm
-	lastEntryTerm := rf.getLastLogTerm()
-	lastEntryIndex := rf.getLastLogIndex()
+	lastEntryIndex := rf.log.getLastIndex()
+	lastEntryTerm := rf.log.getLogTermByIndex(lastEntryIndex)
+	rf.debugLog(Lab2A, LOG, "RequestVoteHandler", "last log index: %v, vote requester last log index: %v",
+		rf.log.getLastIndex(), args.LastLogIndex)
 	if args.Term < rf.currentTerm {
 		reply.VoteGranted = false
-		rf.debugLog(LOG, "RequestVoteHandler", "Refuse vote request: request's term is outdated")
+		rf.debugLog(Lab2A, LOG, "RequestVoteHandler", "Refuse vote request: request's term is outdated")
 	} else if rf.votedFor >= 0 && rf.votedFor != args.CandidateID {
 		reply.VoteGranted = false
 		// election restrictions in chapter 5.4
-		rf.debugLog(LOG, "RequestVoteHandler", "Refuse vote request: already voted")
+		rf.debugLog(Lab2A, LOG, "RequestVoteHandler", "Refuse vote request: already voted")
 	} else if args.LastLogTerm < lastEntryTerm {
 		reply.VoteGranted = false
-		rf.debugLog(LOG, "RequestVoteHandler", "Refuse vote request: request's last log term is outdated")
-	} else if args.Term == lastEntryTerm && args.LastLogIndex < lastEntryIndex {
+		rf.debugLog(Lab2A, LOG, "RequestVoteHandler", "Refuse vote request: request's last log term is outdated")
+	} else if args.LastLogTerm == lastEntryTerm && args.LastLogIndex < lastEntryIndex {
 		reply.VoteGranted = false
-		rf.debugLog(LOG, "RequestVoteHandler", "Refuse vote request: request's last log index is outdated")
+		rf.debugLog(Lab2A, LOG, "RequestVoteHandler", "Refuse vote request: request's last log index is outdated")
 	} else {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateID
-		rf.debugLog(LOG, "RequestVoteHandler", "Granted vote: voted for %v", args.CandidateID)
+		rf.debugLog(Lab2A, LOG, "RequestVoteHandler", "Granted vote: voted for %v", args.CandidateID)
 		if rf.identity == CANDIDATE {
 			rf.becomeFollower()
 		}
@@ -83,14 +87,15 @@ func (rf *Raft) RequestVoteHandler(args *RequestVoteArgs, reply *RequestVoteRepl
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
-	rf.debugLog(LOG, "sendRequestVote", "send request vote to server %v", server)
+	rf.debugLog(Lab2A, LOG, "sendRequestVote", "send request vote to server %v", server)
 	rf.mu.Unlock()
 	ok := rf.peers[server].Call("Raft.RequestVoteHandler", args, reply)
 	for !ok && !rf.killed() {
 		ok = rf.peers[server].Call("Raft.RequestVoteHandler", args, reply)
+		time.Sleep(RPC_RESEND_DURATION * time.Millisecond)
 	}
 	rf.mu.Lock()
-	rf.debugLog(LOG, "sendRequestVote",
+	rf.debugLog(Lab2A, LOG, "sendRequestVote",
 		"server %v received vote request, vote result is %v",
 		server, reply.VoteGranted)
 	rf.mu.Unlock()
