@@ -87,13 +87,42 @@ func (rf *Raft) AppendEntriesHandler(args *AppendEntriesArgs, reply *AppendEntri
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	//rf.mu.Lock()
-	//rf.debugLog(Lab2A, LOG, "sendAppendEntries", "send heartbeat to %v server", server)
-	//rf.mu.Unlock()
+	if COUNT_RPC {
+		rf.mu.Lock()
+		rf.rpcCount += 1
+		rf.debugLog(ALL, LOG,
+			"sendAppendEntries", "send append entries to server %v, rpc count increase, now %v",
+			server, rf.rpcCount)
+		rf.mu.Unlock()
+	}
 	ok := rf.peers[server].Call("Raft.AppendEntriesHandler", args, reply)
+	if COUNT_RPC {
+		rf.mu.Lock()
+		rf.rpcCount -= 1
+		rf.debugLog(ALL, LOG,
+			"sendAppendEntries", "received append entries reply from server %v, rpc count decrease, now: %v",
+			server, rf.rpcCount)
+		rf.mu.Unlock()
+	}
 	for !ok && !rf.killed() {
-		ok = rf.peers[server].Call("Raft.AppendEntriesHandler", args, reply)
 		time.Sleep(RPC_RESEND_DURATION * time.Millisecond)
+		if COUNT_RPC {
+			rf.mu.Lock()
+			rf.rpcCount += 1
+			rf.debugLog(ALL, LOG,
+				"sendAppendEntries", "trying to send append entries to server %v, rpc count increase, now %v",
+				server, rf.rpcCount)
+			rf.mu.Unlock()
+		}
+		ok = rf.peers[server].Call("Raft.AppendEntriesHandler", args, reply)
+		if COUNT_RPC {
+			rf.mu.Lock()
+			rf.rpcCount -= 1
+			rf.debugLog(ALL, LOG,
+				"sendAppendEntries", "received send append entries reply from server %v, rpc count decrease, now %v",
+				server, rf.rpcCount)
+			rf.mu.Unlock()
+		}
 	}
 	//rf.mu.Lock()
 	//rf.debugLog(Lab2A, LOG, "sendAppendEntries", "%v server received heartbeat", server)

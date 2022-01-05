@@ -102,6 +102,9 @@ type Raft struct {
 	remainsTime  int
 	applyChannel chan ApplyMsg
 	logStartIdx  int
+
+	//  debug usage fields
+	rpcCount int
 }
 
 // GetState return currentTerm and whether this server
@@ -466,27 +469,25 @@ func (rf *Raft) tryCommit() {
 
 func (rf *Raft) tryApply() {
 	rf.mu.Lock()
-	lastApplied := rf.lastApplied
-	commitIndex := rf.commitIndex
+	defer rf.mu.Unlock()
 	rf.debugLog(Lab2B, LOG, "tryApply", "Trying to apply commands, lastApplied: %v, commitIndex %v",
-		lastApplied, commitIndex)
-	rf.mu.Unlock()
-	for ; commitIndex > lastApplied; lastApplied++ {
-		rf.mu.Lock()
+		rf.lastApplied, rf.commitIndex)
+	for rf.commitIndex > rf.lastApplied {
 		var applyMsg ApplyMsg
 		applyMsg.CommandValid = true
-		lastAppliedLog, ok := rf.log.get(lastApplied + 1)
+		lastAppliedLog, ok := rf.log.get(rf.lastApplied + 1)
 		if !ok {
-			rf.debugLog(Lab2B, ERROR, "tryApply", "Failed to access lastApplied log :%v", lastApplied+1)
+			rf.debugLog(Lab2B, ERROR, "tryApply", "Failed to access lastApplied log :%v",
+				rf.lastApplied+1)
+			return
 		}
 		applyMsg.Command = lastAppliedLog.Command
-		applyMsg.CommandIndex = lastApplied + 1
+		applyMsg.CommandIndex = rf.lastApplied + 1
+		rf.lastApplied += 1
 		rf.mu.Unlock()
 		rf.applyChannel <- applyMsg
 		rf.mu.Lock()
-		rf.lastApplied += 1
 		rf.debugLog(Lab2B, LOG, "tryApply", "Applied command, Message: %+v", applyMsg)
-		rf.mu.Unlock()
 	}
 }
 

@@ -8,7 +8,10 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
+import (
+	"log"
+	"testing"
+)
 import "fmt"
 import "time"
 import "math/rand"
@@ -479,6 +482,129 @@ func TestBackup2B(t *testing.T) {
 	cfg.end()
 }
 
+// Self defined test
+func TestBackupSelfDefined(t *testing.T) {
+	rand.Seed(0)
+	commandIdx := 0
+	servers := 5
+	cfg := make_config(t, servers, false, false)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2B): leader backs up quickly over incorrect follower logs")
+
+	cfg.one(commandIdx, servers, true)
+
+	// put leader and one follower in a partition
+	leader1 := cfg.checkOneLeader()
+	cfg.disconnect((leader1 + 2) % servers)
+	cfg.disconnect((leader1 + 3) % servers)
+	cfg.disconnect((leader1 + 4) % servers)
+
+	log.Printf("Test Scripts: disconnect 3 servers: %v, %v, %v",
+		(leader1+2)%servers,
+		(leader1+3)%servers,
+		(leader1+4)%servers)
+
+	startCommandIdx := commandIdx
+	// submit lots of commands that won't commit
+	for i := 0; i < 50; i++ {
+		cfg.rafts[leader1].Start(commandIdx)
+		commandIdx += 1
+	}
+
+	log.Printf("Test Scripts: submitted commandIdx from %v to %v, supposed to not commit",
+		startCommandIdx, commandIdx)
+
+	time.Sleep(RaftElectionTimeout / 2)
+
+	cfg.disconnect((leader1 + 0) % servers)
+	cfg.disconnect((leader1 + 1) % servers)
+
+	log.Printf("Test Scripts: disconnect 2 servers: %v, %v",
+		(leader1+0)%servers,
+		(leader1+1)%servers)
+
+	// allow other partition to recover
+	cfg.connect((leader1 + 2) % servers)
+	cfg.connect((leader1 + 3) % servers)
+	cfg.connect((leader1 + 4) % servers)
+
+	log.Printf("Test Scripts: recovered 3 servers: %v, %v, %v",
+		(leader1+2)%servers,
+		(leader1+3)%servers,
+		(leader1+4)%servers)
+
+	// lots of successful commands to new group.
+	startCommandIdx = commandIdx
+
+	for i := 0; i < 50; i++ {
+		cfg.one(commandIdx, 3, true)
+		commandIdx += 1
+	}
+
+	log.Printf("Test Scripts: submitted commandIdx from %v to %v, supposed to succeed",
+		startCommandIdx, commandIdx)
+
+	// now another partitioned leader and one follower
+	leader2 := cfg.checkOneLeader()
+	other := (leader1 + 2) % servers
+	if leader2 == other {
+		other = (leader2 + 1) % servers
+	}
+	cfg.disconnect(other)
+
+	log.Printf("Test Scripts: disconnect 1 servers: %v", other)
+
+	// lots more commands that won't commit
+
+	startCommandIdx = commandIdx
+
+	for i := 0; i < 50; i++ {
+		cfg.rafts[leader2].Start(commandIdx)
+		commandIdx += 1
+	}
+
+	log.Printf("Test Scripts: submitted commandIdx from %v to %v, supposed to not commit",
+		startCommandIdx, commandIdx)
+
+	time.Sleep(RaftElectionTimeout / 2)
+
+	// bring original leader back to life,
+	for i := 0; i < servers; i++ {
+		cfg.disconnect(i)
+	}
+	cfg.connect((leader1 + 0) % servers)
+	cfg.connect((leader1 + 1) % servers)
+	cfg.connect(other)
+
+	log.Printf("Test Scripts: disconnected 3 servers: %v, %v, %v",
+		(leader1+0)%servers,
+		(leader1+1)%servers,
+		other)
+
+	// lots of successful commands to new group.
+	startCommandIdx = commandIdx
+	for i := 0; i < 50; i++ {
+		cfg.one(rand.Int(), 3, true)
+		commandIdx += 1
+	}
+
+	log.Printf("Test Scripts: submitted commandIdx from %v to %v, supposed to succeed",
+		startCommandIdx, commandIdx)
+
+	// now everyone
+	for i := 0; i < servers; i++ {
+		cfg.connect(i)
+	}
+
+	log.Printf("Test Scripts: recover every server")
+
+	cfg.one(commandIdx, servers, true)
+
+	log.Printf("Test Scripts: add final command %v, supposed to succeed", commandIdx)
+	cfg.end()
+}
+
 func TestCount2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -582,6 +708,7 @@ loop:
 		total3 += cfg.rpcCount(j)
 	}
 
+	log.Printf("%v", total3-total2)
 	if total3-total2 > 3*20 {
 		t.Fatalf("too many RPCs (%v) for 1 second of idleness\n", total3-total2)
 	}
