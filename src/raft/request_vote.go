@@ -22,6 +22,13 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 
+func (rf *Raft) prepareRequestVoteArgs(requestVoteArgs *RequestVoteArgs) {
+	requestVoteArgs.CandidateID = rf.me
+	requestVoteArgs.Term = rf.currentTerm
+	requestVoteArgs.LastLogIndex = rf.log.getLastIndex()
+	requestVoteArgs.LastLogTerm = rf.log.getLogTermByIndex(requestVoteArgs.LastLogIndex)
+}
+
 func (rf *Raft) RequestVoteHandler(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()

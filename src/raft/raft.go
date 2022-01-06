@@ -135,6 +135,7 @@ func (rf *Raft) persist() {
 
 	//rf.mu.Lock()
 	//defer rf.mu.Unlock()
+	startTime := time.Now()
 	rf.debugLog(Lab2C, LOG, "persist",
 		"Start persisting data:\ncurrentTerm: %v, votedFor: %v, log: %v",
 		rf.currentTerm,
@@ -157,6 +158,9 @@ func (rf *Raft) persist() {
 	}
 	data := writer.Bytes()
 	rf.persister.SaveRaftState(data)
+	duration := time.Since(startTime).Milliseconds()
+	rf.debugLog(Lab2C, LOG, "persist",
+		"Finished persisting data, cost %v milliseconds", duration)
 }
 
 //
@@ -280,20 +284,14 @@ func (rf *Raft) appendEntriesOnServer(serverID int) {
 	rf.mu.Lock()
 	var appendEntriesArgs AppendEntriesArgs
 	var appendEntriesReply AppendEntriesReply
-	appendEntriesArgs.Term = rf.currentTerm
-	appendEntriesArgs.LeaderID = rf.me
-	appendEntriesArgs.PrevLogIndex = rf.nextIndex[serverID] - 1
-	appendEntriesArgs.PrevLogTerm = rf.log.getLogTermByIndex(appendEntriesArgs.PrevLogIndex)
-	appendEntriesArgs.LeaderCommitIndex = rf.commitIndex
-	appendEntriesArgs.Entries = make([]LogEntry, 0)
 	currentLastIndex := rf.log.getLastIndex()
-	for _, logEntry := range rf.log.sliceToEnd(rf.nextIndex[serverID]) {
-		appendEntriesArgs.Entries = append(appendEntriesArgs.Entries, logEntry)
-	}
+	rf.prepareAppendEntriesArgs(&appendEntriesArgs, serverID)
 	rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "Trying to append entries: %v to server %v",
 		appendEntriesArgs.Entries, serverID)
 	rf.mu.Unlock()
+
 	rf.sendAppendEntries(serverID, &appendEntriesArgs, &appendEntriesReply)
+
 	rf.mu.Lock()
 	for !appendEntriesReply.Success && !rf.killed() {
 		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "Failed to append entries on server %v", serverID)
@@ -314,14 +312,8 @@ func (rf *Raft) appendEntriesOnServer(serverID int) {
 			rf.nextIndex[serverID] = rf.log.StartIdx
 		}
 
-		appendEntriesArgs.Term = rf.currentTerm
-		appendEntriesArgs.Entries = make([]LogEntry, 0)
-		appendEntriesArgs.PrevLogIndex = rf.nextIndex[serverID] - 1
-		appendEntriesArgs.PrevLogTerm = rf.log.getLogTermByIndex(appendEntriesArgs.PrevLogIndex)
-		appendEntriesArgs.LeaderCommitIndex = rf.commitIndex
-		for _, logEntry := range rf.log.sliceToEnd(rf.nextIndex[serverID]) {
-			appendEntriesArgs.Entries = append(appendEntriesArgs.Entries, logEntry)
-		}
+		rf.prepareAppendEntriesArgs(&appendEntriesArgs, serverID)
+		appendEntriesReply = AppendEntriesReply{}
 		rf.debugLog(Lab2B, LOG, "logReplication", "Trying to re-append entries: %v to server %v",
 			appendEntriesArgs.Entries, serverID)
 		rf.persist()
@@ -492,16 +484,13 @@ func (rf *Raft) requestVotes() bool {
 		if i == rf.me {
 			continue
 		}
-		var requestVoteArgs RequestVoteArgs
-		var requestVoteReply RequestVoteReply
-		rf.mu.Lock()
-		requestVoteArgs.CandidateID = rf.me
-		requestVoteArgs.Term = rf.currentTerm
-		requestVoteArgs.LastLogIndex = rf.log.getLastIndex()
-		requestVoteArgs.LastLogTerm = rf.log.getLogTermByIndex(requestVoteArgs.LastLogIndex)
-		rf.mu.Unlock()
 
 		go func(i int) {
+			rf.mu.Lock()
+			var requestVoteArgs RequestVoteArgs
+			var requestVoteReply RequestVoteReply
+			rf.prepareRequestVoteArgs(&requestVoteArgs)
+			rf.mu.Unlock()
 			rf.sendRequestVote(i, &requestVoteArgs, &requestVoteReply)
 			rf.mu.Lock()
 			defer rf.mu.Unlock()

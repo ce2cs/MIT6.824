@@ -585,7 +585,7 @@ func TestBackupSelfDefined(t *testing.T) {
 	// lots of successful commands to new group.
 	startCommandIdx = commandIdx
 	for i := 0; i < 50; i++ {
-		cfg.one(rand.Int(), 3, true)
+		cfg.one(commandIdx, 3, true)
 		commandIdx += 1
 	}
 

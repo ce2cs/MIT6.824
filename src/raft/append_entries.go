@@ -22,8 +22,7 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
-func (rf *Raft) prepareAppendEntriesArgs(serverID int) *AppendEntriesArgs {
-	var appendEntriesArgs *AppendEntriesArgs
+func (rf *Raft) prepareAppendEntriesArgs(appendEntriesArgs *AppendEntriesArgs, serverID int) {
 	appendEntriesArgs.Term = rf.currentTerm
 	appendEntriesArgs.LeaderID = rf.me
 	appendEntriesArgs.PrevLogIndex = rf.nextIndex[serverID] - 1
@@ -33,7 +32,6 @@ func (rf *Raft) prepareAppendEntriesArgs(serverID int) *AppendEntriesArgs {
 	for _, logEntry := range rf.log.sliceToEnd(rf.nextIndex[serverID]) {
 		appendEntriesArgs.Entries = append(appendEntriesArgs.Entries, logEntry)
 	}
-	return appendEntriesArgs
 }
 func (rf *Raft) AppendEntriesHandler(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
