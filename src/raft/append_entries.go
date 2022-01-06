@@ -22,9 +22,23 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
+func (rf *Raft) prepareAppendEntriesArgs(serverID int) *AppendEntriesArgs {
+	var appendEntriesArgs *AppendEntriesArgs
+	appendEntriesArgs.Term = rf.currentTerm
+	appendEntriesArgs.LeaderID = rf.me
+	appendEntriesArgs.PrevLogIndex = rf.nextIndex[serverID] - 1
+	appendEntriesArgs.PrevLogTerm = rf.log.getLogTermByIndex(appendEntriesArgs.PrevLogIndex)
+	appendEntriesArgs.LeaderCommitIndex = rf.commitIndex
+	appendEntriesArgs.Entries = make([]LogEntry, 0)
+	for _, logEntry := range rf.log.sliceToEnd(rf.nextIndex[serverID]) {
+		appendEntriesArgs.Entries = append(appendEntriesArgs.Entries, logEntry)
+	}
+	return appendEntriesArgs
+}
 func (rf *Raft) AppendEntriesHandler(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	reply.Success = true
 	rf.debugLog(ALL, LOG, "AppendEntriesHandler",
 		"Got append entries request, args: %+v", args)

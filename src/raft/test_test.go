@@ -848,7 +848,7 @@ func TestPersist32C(t *testing.T) {
 // The leader in a new term may try to finish replicating log entries that
 // haven't been committed yet.
 //
-func TestFigure82C(t *testing.T) {
+func TestFigure82CMultipleTimes(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -934,6 +934,61 @@ func TestUnreliableAgree2C(t *testing.T) {
 }
 
 func TestFigure8Unreliable2C(t *testing.T) {
+	servers := 5
+	cfg := make_config(t, servers, true, false)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2C): Figure 8 (unreliable)")
+
+	cfg.one(rand.Int()%10000, 1, true)
+
+	nup := servers
+	for iters := 0; iters < 1000; iters++ {
+		if iters == 200 {
+			cfg.setlongreordering(true)
+		}
+		leader := -1
+		for i := 0; i < servers; i++ {
+			_, _, ok := cfg.rafts[i].Start(rand.Int() % 10000)
+			if ok && cfg.connected[i] {
+				leader = i
+			}
+		}
+
+		if (rand.Int() % 1000) < 100 {
+			ms := rand.Int63() % (int64(RaftElectionTimeout/time.Millisecond) / 2)
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		} else {
+			ms := (rand.Int63() % 13)
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}
+
+		if leader != -1 && (rand.Int()%1000) < int(RaftElectionTimeout/time.Millisecond)/2 {
+			cfg.disconnect(leader)
+			nup -= 1
+		}
+
+		if nup < 3 {
+			s := rand.Int() % servers
+			if cfg.connected[s] == false {
+				cfg.connect(s)
+				nup += 1
+			}
+		}
+	}
+
+	for i := 0; i < servers; i++ {
+		if cfg.connected[i] == false {
+			cfg.connect(i)
+		}
+	}
+
+	cfg.one(rand.Int()%10000, servers, true)
+
+	cfg.end()
+}
+
+func TestFigure8Unreliable2CWithLog(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, true, false)
 	defer cfg.cleanup()

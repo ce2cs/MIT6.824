@@ -17,6 +17,8 @@ package raft
 //   in the same server.
 //
 import (
+	"6.824/labgob"
+	"bytes"
 	"fmt"
 	//	"bytes"
 	"sync"
@@ -130,13 +132,40 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+
+	//rf.mu.Lock()
+	//defer rf.mu.Unlock()
+	rf.debugLog(Lab2C, LOG, "persist",
+		"Start persisting data:\ncurrentTerm: %v, votedFor: %v, log: %v",
+		rf.currentTerm,
+		rf.votedFor,
+		rf.log)
+
+	writer := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(writer)
+	err := encoder.Encode(rf.currentTerm)
+	if err != nil {
+		rf.debugLog(Lab2C, ERROR, "persist", "Failed to encode current term :%v", rf.currentTerm)
+	}
+	err = encoder.Encode(rf.votedFor)
+	if err != nil {
+		rf.debugLog(Lab2C, ERROR, "persist", "Failed to encode votedFor :%v", rf.votedFor)
+	}
+	err = encoder.Encode(rf.log)
+	if err != nil {
+		rf.debugLog(Lab2C, ERROR, "persist", "Failed to encode logs: %v", rf.log)
+	}
+	data := writer.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
 // restore previously persisted state.
 //
 func (rf *Raft) readPersist(data []byte) {
+	rf.debugLog(Lab2C, LOG, "readPersist", "Start reading persist...")
 	if data == nil || len(data) < 1 { // bootstrap without any state?
+		rf.debugLog(Lab2C, LOG, "readPersist", "Nothing need to restore from persist")
 		return
 	}
 	// Your code here (2C).
@@ -152,6 +181,32 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	reader := bytes.NewBuffer(data)
+	decoder := labgob.NewDecoder(reader)
+	var currentTerm int
+	var votedFor int
+	var log CommandLogs
+	err := decoder.Decode(&currentTerm)
+	if err != nil {
+		rf.debugLog(Lab2C, ERROR, "persist", "Failed to decode current term")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.debugLog(Lab2C, LOG, "persist", "Succeed to decode current term: %v", rf.currentTerm)
+	}
+	err = decoder.Decode(&votedFor)
+	if err != nil {
+		rf.debugLog(Lab2C, ERROR, "persist", "Failed to decode votedFor")
+	} else {
+		rf.votedFor = votedFor
+		rf.debugLog(Lab2C, LOG, "persist", "Succeed to decode votedFor : %v", rf.votedFor)
+	}
+	err = decoder.Decode(&log)
+	if err != nil {
+		rf.debugLog(Lab2C, ERROR, "persist", "Failed to decode logs")
+	} else {
+		rf.log = log
+		rf.debugLog(Lab2C, LOG, "persist", "Succeed to decode log: %v", rf.log)
+	}
 }
 
 //
@@ -212,108 +267,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
-//func (rf *Raft) logReplication() {
-//	rf.mu.Lock()
-//	prevLogIndex := rf.log.getLastIndex() - 1
-//	needToCommit := rf.log.getLastIndex()
-//	prevLogTerm := rf.log.getLogTermByIndex(prevLogIndex)
-//	currentTerm := rf.currentTerm
-//	leaderCommitIndex := rf.commitIndex
-//	rf.mu.Unlock()
-//
-//	//mu := sync.Mutex{}
-//	//cond := sync.NewCond(&mu)
-//	//replicatedServerNum := 1
-//	//peerNums := len(rf.peers)
-//	//threshold := peerNums/2 + 1
-//	for i := 0; i < len(rf.peers); i++ {
-//		if i == rf.me {
-//			continue
-//		}
-//
-//		go func(i int) {
-//			var appendEntriesArgs AppendEntriesArgs
-//			var appendEntriesReply AppendEntriesReply
-//			appendEntriesArgs.Term = currentTerm
-//			appendEntriesArgs.LeaderID = rf.me
-//			appendEntriesArgs.PrevLogIndex = prevLogIndex
-//			appendEntriesArgs.PrevLogTerm = prevLogTerm
-//			appendEntriesArgs.LeaderCommitIndex = leaderCommitIndex
-//			rf.mu.Lock()
-//			appendEntriesArgs.Entries = make([]LogEntry, 0)
-//			for _, logEntry := range rf.log.sliceToEnd(rf.nextIndex[i]) {
-//				appendEntriesArgs.Entries = append(appendEntriesArgs.Entries, logEntry)
-//			}
-//			rf.debugLog(Lab2B, LOG, "logReplication", "Trying to append entries: %v to server %v",
-//				appendEntriesArgs.Entries, i)
-//			rf.mu.Unlock()
-//			rf.sendAppendEntries(i, &appendEntriesArgs, &appendEntriesReply)
-//			for !appendEntriesReply.Success && !rf.killed() {
-//				rf.mu.Lock()
-//				rf.debugLog(Lab2B, LOG, "logReplication", "Failed to append entries on server %v", i)
-//				if rf.currentTerm != appendEntriesReply.Term {
-//					rf.debugLog(Lab2B, LOG, "logReplication", "Current term outdated, stop send appendEntries")
-//					rf.checkAndSetTerm(appendEntriesReply.Term)
-//					rf.mu.Unlock()
-//					return
-//				}
-//
-//				rf.checkAndSetTerm(appendEntriesReply.Term)
-//
-//				if rf.identity != LEADER {
-//					rf.mu.Unlock()
-//					rf.debugLog(Lab2B, LOG, "logReplication", "No longer a leader, stop send appendEntries")
-//					return
-//				}
-//
-//				rf.nextIndex[i] -= 1
-//				if rf.nextIndex[i] == -1 {
-//					rf.debugLog(Lab2B, ERROR, "logReplication",
-//						"Trying to replicate logs on server %v failed, nextIndex becomes negative",
-//						i)
-//				}
-//
-//				appendEntriesArgs.Entries = make([]LogEntry, 0)
-//				for _, logEntry := range rf.log.sliceToEnd(rf.nextIndex[i]) {
-//					appendEntriesArgs.Entries = append(appendEntriesArgs.Entries, logEntry)
-//				}
-//				rf.debugLog(Lab2B, LOG, "logReplication", "Trying to re-append entries: %v to server %v",
-//					appendEntriesArgs.Entries, i)
-//				rf.mu.Unlock()
-//				rf.sendAppendEntries(i, &appendEntriesArgs, &appendEntriesReply)
-//			}
-//			if appendEntriesReply.Success {
-//				//mu.Lock()
-//				//replicatedServerNum += 1
-//				//mu.Unlock()
-//				//cond.Broadcast()
-//				rf.mu.Lock()
-//				if rf.nextIndex[i] < needToCommit+1 {
-//					rf.nextIndex[i] = needToCommit + 1
-//				}
-//				if rf.matchIndex[i] < needToCommit {
-//					rf.matchIndex[i] = needToCommit
-//				}
-//				rf.debugLog(Lab2B, LOG, "logReplication",
-//					"Succeed to send appendEntries to server %v, nextIndex updated to: %v, matchIndex:%v",
-//					i, rf.nextIndex[i], rf.matchIndex[i])
-//				rf.mu.Unlock()
-//			}
-//		}(i)
-//
-//		//mu.Lock()
-//		//for replicatedServerNum < threshold {
-//		//	cond.Wait()
-//		//}
-//		//
-//		//if replicatedServerNum >= threshold {
-//		//	rf.mu.Lock()
-//		//	rf.commitIndex = needToCommit
-//		//	rf.mu.Unlock()
-//		//}
-//	}
-//}
-
 func (rf *Raft) logReplication() {
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
@@ -341,8 +294,8 @@ func (rf *Raft) appendEntriesOnServer(serverID int) {
 		appendEntriesArgs.Entries, serverID)
 	rf.mu.Unlock()
 	rf.sendAppendEntries(serverID, &appendEntriesArgs, &appendEntriesReply)
+	rf.mu.Lock()
 	for !appendEntriesReply.Success && !rf.killed() {
-		rf.mu.Lock()
 		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "Failed to append entries on server %v", serverID)
 
 		rf.checkAndSetTerm(appendEntriesReply.Term)
@@ -371,15 +324,16 @@ func (rf *Raft) appendEntriesOnServer(serverID int) {
 		}
 		rf.debugLog(Lab2B, LOG, "logReplication", "Trying to re-append entries: %v to server %v",
 			appendEntriesArgs.Entries, serverID)
+		rf.persist()
 		rf.mu.Unlock()
 		rf.sendAppendEntries(serverID, &appendEntriesArgs, &appendEntriesReply)
+		rf.mu.Lock()
 	}
 	if appendEntriesReply.Success {
 		//mu.Lock()
 		//replicatedServerNum += 1
 		//mu.Unlock()
 		//cond.Broadcast()
-		rf.mu.Lock()
 		if rf.nextIndex[serverID] < currentLastIndex+1 {
 			rf.nextIndex[serverID] = currentLastIndex + 1
 		}
@@ -389,6 +343,7 @@ func (rf *Raft) appendEntriesOnServer(serverID int) {
 		rf.debugLog(Lab2B, LOG, "logReplication",
 			"Succeed to send appendEntries to server %v, nextIndex updated to: %v, matchIndex:%v",
 			serverID, rf.nextIndex[serverID], rf.matchIndex[serverID])
+		rf.persist()
 		rf.mu.Unlock()
 	}
 }
@@ -404,6 +359,7 @@ func (rf *Raft) appendEntriesOnServer(serverID int) {
 // confusing debug output. any goroutine with a long-running loop
 // should call killed() to check whether it should stop.
 //
+
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
@@ -491,30 +447,6 @@ func (rf *Raft) tryApply() {
 	}
 }
 
-//func (rf *Raft) claimAuthority() {
-//	rf.debugLog(Lab2A, LOG, "claimAuthority", "Claiming Authority...")
-//	for i := 0; i < len(rf.peers); i++ {
-//		if i == rf.me {
-//			continue
-//		}
-//		var appendEntriesArgs AppendEntriesArgs
-//		var appendEntriesReply AppendEntriesReply
-//
-//		appendEntriesArgs.Term = rf.currentTerm
-//		appendEntriesArgs.LeaderID = rf.me
-//		appendEntriesArgs.PrevLogIndex = rf.log.getLastIndex()
-//		appendEntriesArgs.PrevLogTerm = rf.log.getLogTermByIndex(appendEntriesArgs.PrevLogIndex)
-//		appendEntriesArgs.LeaderCommitIndex = rf.commitIndex
-//
-//		go func(i int) {
-//			rf.sendAppendEntries(i, &appendEntriesArgs, &appendEntriesReply)
-//			rf.mu.Lock()
-//			defer rf.mu.Unlock()
-//			rf.checkAndSetTerm(appendEntriesReply.Term)
-//		}(i)
-//	}
-//}
-
 func (rf *Raft) claimAuthority() {
 	rf.debugLog(Lab2A, LOG, "claimAuthority", "Claiming Authority...")
 	for i := 0; i < len(rf.peers); i++ {
@@ -573,6 +505,7 @@ func (rf *Raft) requestVotes() bool {
 			rf.sendRequestVote(i, &requestVoteArgs, &requestVoteReply)
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
+			defer rf.persist()
 			rf.checkAndSetTerm(requestVoteReply.Term)
 			mu.Lock()
 			defer mu.Unlock()

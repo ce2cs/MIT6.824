@@ -25,8 +25,9 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVoteHandler(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
-	rf.debugLog(Lab2A, LOG, "RequestVoteHandler", "Got vote request")
 	defer rf.mu.Unlock()
+	defer rf.persist()
+	rf.debugLog(Lab2A, LOG, "RequestVoteHandler", "Got vote request")
 	rf.checkAndSetTerm(args.Term)
 	reply.Term = rf.currentTerm
 	lastEntryIndex := rf.log.getLastIndex()
