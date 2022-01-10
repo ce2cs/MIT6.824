@@ -1,273 +1,153 @@
 package raft
 
 import (
-	"log"
 	"math/rand"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-//
-//import (
-//	"log"
-//	"math/rand"
-//	"testing"
-//	"time"
-//)
-//
-////
-//// Test the scenarios described in Figure 8 of the extended Raft paper. Each
-//// iteration asks a leader, if there is one, to insert a command in the Raft
-//// log.  If there is a leader, that leader will fail quickly with a high
-//// probability (perhaps without committing the command), or crash after a while
-//// with low probability (most likey committing the command).  If the number of
-//// alive servers isn't enough to form a majority, perhaps start a new server.
-//// The leader in a new term may try to finish replicating log entries that
-//// haven't been committed yet.
-////
-//func TestFigure82CWithLog(t *testing.T) {
-//	commandIdx := 0
-//	servers := 5
-//	cfg := make_config(t, servers, false, false)
-//	defer cfg.cleanup()
-//
-//	cfg.begin("Test (2C): Figure 8")
-//
-//	cfg.one(commandIdx, 1, true)
-//	commandIdx += 1
-//
-//	nup := servers
-//	for iters := 0; iters < 1000; iters++ {
-//		leader := -1
-//		for i := 0; i < servers; i++ {
-//			if cfg.rafts[i] != nil {
-//				_, _, ok := cfg.rafts[i].Start(commandIdx)
-//				commandIdx += 1
-//				if ok {
-//					leader = i
-//				}
-//			}
-//		}
-//
-//		if (rand.Int() % 1000) < 100 {
-//			ms := rand.Int63() % (int64(RaftElectionTimeout/time.Millisecond) / 2)
-//			time.Sleep(time.Duration(ms) * time.Millisecond)
-//			log.Printf("Test scripts: slept %v miliseconds", ms)
-//		} else {
-//			ms := (rand.Int63() % 13)
-//			time.Sleep(time.Duration(ms) * time.Millisecond)
-//			log.Printf("Test scripts: slept %v miliseconds", ms)
-//		}
-//
-//		if leader != -1 {
-//			cfg.crash1(leader)
-//			log.Printf("Test scripts: server %v crashed", leader)
-//			nup -= 1
-//		}
-//
-//		if nup < 3 {
-//			s := rand.Int() % servers
-//			if cfg.rafts[s] == nil {
-//				cfg.start1(s, cfg.applier)
-//				cfg.connect(s)
-//				log.Printf("Test scripts: server %v recovered", s)
-//				nup += 1
-//			}
-//		}
-//	}
-//
-//	for i := 0; i < servers; i++ {
-//		if cfg.rafts[i] == nil {
-//			cfg.start1(i, cfg.applier)
-//			cfg.connect(i)
-//		}
-//	}
-//	log.Printf("Test scripts: recovered all server")
-//
-//	cfg.one(commandIdx, servers, true)
-//	commandIdx += 1
-//
-//	cfg.end()
-//}
-//
-//func TestFigure8Unreliable2CWithLog(t *testing.T) {
-//	commandIdx := 0
-//	servers := 5
-//	cfg := make_config(t, servers, true, false)
-//	defer cfg.cleanup()
-//
-//	cfg.begin("Test (2C): Figure 8 (unreliable)")
-//
-//	cfg.one(commandIdx, 1, true)
-//	commandIdx += 1
-//
-//	nup := servers
-//	for iters := 0; iters < 1000; iters++ {
-//		if iters == 200 {
-//			cfg.setlongreordering(true)
-//		}
-//		leader := -1
-//		for i := 0; i < servers; i++ {
-//			_, _, ok := cfg.rafts[i].Start(rand.Int() % 10000)
-//			if ok && cfg.connected[i] {
-//				leader = i
-//			}
-//		}
-//
-//		if (rand.Int() % 1000) < 100 {
-//			ms := rand.Int63() % (int64(RaftElectionTimeout/time.Millisecond) / 2)
-//			time.Sleep(time.Duration(ms) * time.Millisecond)
-//		} else {
-//			ms := (rand.Int63() % 13)
-//			time.Sleep(time.Duration(ms) * time.Millisecond)
-//		}
-//
-//		if leader != -1 && (rand.Int()%1000) < int(RaftElectionTimeout/time.Millisecond)/2 {
-//			cfg.disconnect(leader)
-//			nup -= 1
-//		}
-//
-//		if nup < 3 {
-//			s := rand.Int() % servers
-//			if cfg.connected[s] == false {
-//				cfg.connect(s)
-//				nup += 1
-//			}
-//		}
-//	}
-//
-//	for i := 0; i < servers; i++ {
-//		if cfg.connected[i] == false {
-//			cfg.connect(i)
-//		}
-//	}
-//
-//	cfg.one(rand.Int()%10000, servers, true)
-//
-//	cfg.end()
-//}
+func internalChurnWithLog(t *testing.T, unreliable bool) {
 
-func TestBackupSelfDefined(t *testing.T) {
-	rand.Seed(0)
-	commandIdx := 0
 	servers := 5
-	cfg := make_config(t, servers, false, false)
+	cfg := make_config(t, servers, unreliable, false)
 	defer cfg.cleanup()
 
-	cfg.begin("Test (2B): leader backs up quickly over incorrect follower logs")
-
-	cfg.one(commandIdx, servers, true)
-	commandIdx += 1
-
-	// put leader and one follower in a partition
-	leader1 := cfg.checkOneLeader()
-	cfg.disconnect((leader1 + 2) % servers)
-	cfg.disconnect((leader1 + 3) % servers)
-	cfg.disconnect((leader1 + 4) % servers)
-
-	log.Printf("Test Scripts: disconnect 3 servers: %v, %v, %v",
-		(leader1+2)%servers,
-		(leader1+3)%servers,
-		(leader1+4)%servers)
-
-	startCommandIdx := commandIdx
-	// submit lots of commands that won't commit
-	for i := 0; i < 50; i++ {
-		cfg.rafts[leader1].Start(commandIdx)
-		commandIdx += 1
+	if unreliable {
+		cfg.begin("Test (2C): unreliable churn")
+	} else {
+		cfg.begin("Test (2C): churn")
 	}
 
-	log.Printf("Test Scripts: submitted commandIdx from %v to %v, supposed to not commit",
-		startCommandIdx, commandIdx)
+	stop := int32(0)
 
-	time.Sleep(RaftElectionTimeout / 2)
-
-	cfg.disconnect((leader1 + 0) % servers)
-	cfg.disconnect((leader1 + 1) % servers)
-
-	log.Printf("Test Scripts: disconnect 2 servers: %v, %v",
-		(leader1+0)%servers,
-		(leader1+1)%servers)
-
-	// allow other partition to recover
-	cfg.connect((leader1 + 2) % servers)
-	cfg.connect((leader1 + 3) % servers)
-	cfg.connect((leader1 + 4) % servers)
-
-	log.Printf("Test Scripts: recovered 3 servers: %v, %v, %v",
-		(leader1+2)%servers,
-		(leader1+3)%servers,
-		(leader1+4)%servers)
-
-	// lots of successful commands to new group.
-	startCommandIdx = commandIdx
-
-	for i := 0; i < 50; i++ {
-		cfg.one(commandIdx, 3, true)
-		commandIdx += 1
+	// create concurrent clients
+	cfn := func(me int, ch chan []int) {
+		var ret []int
+		ret = nil
+		defer func() { ch <- ret }()
+		values := []int{}
+		for atomic.LoadInt32(&stop) == 0 {
+			x := rand.Int()
+			index := -1
+			ok := false
+			for i := 0; i < servers; i++ {
+				// try them all, maybe one of them is a leader
+				cfg.mu.Lock()
+				rf := cfg.rafts[i]
+				cfg.mu.Unlock()
+				if rf != nil {
+					index1, _, ok1 := rf.Start(x)
+					if ok1 {
+						ok = ok1
+						index = index1
+					}
+				}
+			}
+			if ok {
+				// maybe leader will commit our value, maybe not.
+				// but don't wait forever.
+				for _, to := range []int{10, 20, 50, 100, 200} {
+					nd, cmd := cfg.nCommitted(index)
+					if nd > 0 {
+						if xx, ok := cmd.(int); ok {
+							if xx == x {
+								values = append(values, x)
+							}
+						} else {
+							cfg.t.Fatalf("wrong command type")
+						}
+						break
+					}
+					time.Sleep(time.Duration(to) * time.Millisecond)
+				}
+			} else {
+				time.Sleep(time.Duration(79+me*17) * time.Millisecond)
+			}
+		}
+		ret = values
 	}
 
-	log.Printf("Test Scripts: submitted commandIdx from %v to %v, supposed to succeed",
-		startCommandIdx, commandIdx)
-
-	// now another partitioned leader and one follower
-	leader2 := cfg.checkOneLeader()
-	other := (leader1 + 2) % servers
-	if leader2 == other {
-		other = (leader2 + 1) % servers
-	}
-	cfg.disconnect(other)
-
-	log.Printf("Test Scripts: disconnect 1 servers: %v", other)
-
-	// lots more commands that won't commit
-
-	startCommandIdx = commandIdx
-
-	for i := 0; i < 50; i++ {
-		cfg.rafts[leader2].Start(commandIdx)
-		commandIdx += 1
+	ncli := 3
+	cha := []chan []int{}
+	for i := 0; i < ncli; i++ {
+		cha = append(cha, make(chan []int))
+		go cfn(i, cha[i])
 	}
 
-	log.Printf("Test Scripts: submitted commandIdx from %v to %v, supposed to not commit",
-		startCommandIdx, commandIdx)
+	for iters := 0; iters < 20; iters++ {
+		if (rand.Int() % 1000) < 200 {
+			i := rand.Int() % servers
+			cfg.disconnect(i)
+		}
 
-	time.Sleep(RaftElectionTimeout / 2)
+		if (rand.Int() % 1000) < 500 {
+			i := rand.Int() % servers
+			if cfg.rafts[i] == nil {
+				cfg.start1(i, cfg.applier)
+			}
+			cfg.connect(i)
+		}
 
-	// bring original leader back to life,
+		if (rand.Int() % 1000) < 200 {
+			i := rand.Int() % servers
+			if cfg.rafts[i] != nil {
+				cfg.crash1(i)
+			}
+		}
+
+		// Make crash/restart infrequent enough that the peers can often
+		// keep up, but not so infrequent that everything has settled
+		// down from one change to the next. Pick a value smaller than
+		// the election timeout, but not hugely smaller.
+		time.Sleep((RaftElectionTimeout * 7) / 10)
+	}
+
+	time.Sleep(RaftElectionTimeout)
+	cfg.setunreliable(false)
 	for i := 0; i < servers; i++ {
-		cfg.disconnect(i)
-	}
-	log.Printf("Test Scripts: disconnected all servers")
-
-	cfg.connect((leader1 + 0) % servers)
-	cfg.connect((leader1 + 1) % servers)
-	cfg.connect(other)
-
-	log.Printf("Test Scripts: reconnected 3 servers: %v, %v, %v",
-		(leader1+0)%servers,
-		(leader1+1)%servers,
-		other)
-
-	// lots of successful commands to new group.
-	startCommandIdx = commandIdx
-	for i := 0; i < 50; i++ {
-		cfg.one(commandIdx, 3, true)
-		commandIdx += 1
-	}
-
-	log.Printf("Test Scripts: submitted commandIdx from %v to %v, supposed to succeed",
-		startCommandIdx, commandIdx)
-
-	// now everyone
-	for i := 0; i < servers; i++ {
+		if cfg.rafts[i] == nil {
+			cfg.start1(i, cfg.applier)
+		}
 		cfg.connect(i)
 	}
 
-	log.Printf("Test Scripts: recover every server")
+	atomic.StoreInt32(&stop, 1)
 
-	cfg.one(commandIdx, servers, true)
+	values := []int{}
+	for i := 0; i < ncli; i++ {
+		vv := <-cha[i]
+		if vv == nil {
+			t.Fatal("client failed")
+		}
+		values = append(values, vv...)
+	}
 
-	log.Printf("Test Scripts: add final command %v, supposed to succeed", commandIdx)
+	time.Sleep(RaftElectionTimeout)
+
+	lastIndex := cfg.one(rand.Int(), servers, true)
+
+	really := make([]int, lastIndex+1)
+	for index := 1; index <= lastIndex; index++ {
+		v := cfg.wait(index, servers, -1)
+		if vi, ok := v.(int); ok {
+			really = append(really, vi)
+		} else {
+			t.Fatalf("not an int")
+		}
+	}
+
+	for _, v1 := range values {
+		ok := false
+		for _, v2 := range really {
+			if v1 == v2 {
+				ok = true
+			}
+		}
+		if ok == false {
+			cfg.t.Fatalf("didn't find a value")
+		}
+	}
+
 	cfg.end()
 }
