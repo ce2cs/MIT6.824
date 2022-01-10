@@ -54,7 +54,7 @@ func (rf *Raft) becomeLeader() {
 		rf.matchIndex[i] = 0
 	}
 	rf.debugLog(ALL, LOG, "becomeLeader", "Becomes leader")
-	rf.claimAuthority()
+	rf.appendEntries()
 	rf.resetTimer()
 }
 

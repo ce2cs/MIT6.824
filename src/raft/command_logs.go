@@ -59,6 +59,34 @@ func (logs *CommandLogs) removeAfterNInclusive(n int) {
 	logs.Logs = logs.Logs[:n]
 }
 
+func (logs *CommandLogs) getFirstIndexByTerm(term int) int {
+	res := 0
+
+	for i := logs.StartIdx; i <= logs.getLastIndex(); i++ {
+		entry, _ := logs.get(i)
+		if entry.Term == term {
+			res = i
+			break
+		}
+	}
+
+	return res
+}
+
+func (logs *CommandLogs) getLastIndexByTerm(term int) int {
+	res := 0
+
+	for i := logs.getLastIndex(); i >= logs.getFirstIndex(); i-- {
+		entry, _ := logs.get(i)
+		if entry.Term == term {
+			res = i
+			break
+		}
+	}
+
+	return res
+}
+
 func (logs *CommandLogs) getLastIndex() int {
 	return len(logs.Logs) - 1 + logs.StartIdx
 }
@@ -86,6 +114,15 @@ func (logs *CommandLogs) set(index int, entry LogEntry) bool {
 	}
 	logs.Logs[arrayIdx] = entry
 	return true
+}
+
+func (logs *CommandLogs) hasTerm(term int) bool {
+	for _, entry := range logs.Logs {
+		if entry.Term == term {
+			return true
+		}
+	}
+	return false
 }
 
 func NewCommandLogs() *CommandLogs {

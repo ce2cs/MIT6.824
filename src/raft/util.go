@@ -1,6 +1,9 @@
 package raft
 
-import "log"
+import (
+	"log"
+	"math"
+)
 
 // Debugging
 const Debug = false
@@ -12,18 +15,22 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-func Max(a int, b int) int {
-	if a > b {
-		return a
-	} else {
-		return b
+func Max(elements ...int) int {
+	res := math.MinInt32
+	for _, ele := range elements {
+		if ele > res {
+			res = ele
+		}
 	}
+	return res
 }
 
-func Min(a int, b int) int {
-	if a < b {
-		return a
-	} else {
-		return b
+func Min(elements ...int) int {
+	res := math.MaxInt32
+	for _, ele := range elements {
+		if ele < res {
+			res = ele
+		}
 	}
+	return res
 }

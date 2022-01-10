@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"log"
 	"time"
 )
 
@@ -26,6 +25,11 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+
+	// fast backup info
+	XTerm      int
+	XIdx       int
+	XLogLength int
 }
 
 func (rf *Raft) prepareAppendEntriesArgs(appendEntriesArgs *AppendEntriesArgs, serverID int) {
@@ -50,25 +54,34 @@ func (rf *Raft) AppendEntriesHandler(args *AppendEntriesArgs, reply *AppendEntri
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
+
 	reply.Success = true
+
 	rf.debugLog(ALL, LOG, "AppendEntriesHandler",
 		"Got append entries request, args: %+v", args)
 	rf.checkAndSetTerm(args.Term)
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Success = false
+		//reply.ConflictTerm = -1
 		rf.debugLog(ALL, LOG, "AppendEntriesHandler", "Append entries failed: request's term is outdated")
 	} else {
 		rf.resetTimer()
 	}
 
-	if reply.Success && args.PrevLogTerm != rf.log.getLogTermByIndex(args.PrevLogIndex) {
+	termNeedMatch := rf.log.getLogTermByIndex(args.PrevLogIndex)
+	if reply.Success && args.PrevLogTerm != termNeedMatch {
 		reply.Success = false
+
+		reply.XTerm = termNeedMatch
+		reply.XIdx = rf.log.getFirstIndexByTerm(reply.XTerm)
+		reply.XLogLength = rf.log.getLength()
+
 		//TODO specify info
 		rf.debugLog(ALL, LOG, "AppendEntriesHandler",
 			"Append entries failed: log entry conflict\ncurrent log: %v, prevLogTerm: %v, prevLogIndex %v",
 			rf.log, args.PrevLogTerm, args.PrevLogIndex)
-		//rf.log.removeAfterNInclusive(args.PrevLogIndex)
+		rf.log.removeAfterNInclusive(args.PrevLogIndex)
 	}
 
 	if !reply.Success {
@@ -106,27 +119,6 @@ func (rf *Raft) AppendEntriesHandler(args *AppendEntriesArgs, reply *AppendEntri
 
 	rf.debugLog(ALL, LOG, "AppendEntriesHandler",
 		"Finished handle append entries request, reply: %+v, current log: %v", reply, rf.log)
-}
-
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	if COUNT_RPC {
-		rf.mu.Lock()
-		rf.rpcCount += 1
-		rf.debugLog(ALL, LOG,
-			"sendAppendEntries", "send append entries to server %v, rpc count increase, now %v",
-			server, rf.rpcCount)
-		rf.mu.Unlock()
-	}
-	ok := rf.peers[server].Call("Raft.AppendEntriesHandler", args, reply)
-	if COUNT_RPC {
-		rf.mu.Lock()
-		rf.rpcCount -= 1
-		rf.debugLog(ALL, LOG,
-			"sendAppendEntries", "received append entries reply from server %v, rpc count decrease, now: %v",
-			server, rf.rpcCount)
-		rf.mu.Unlock()
-	}
-	return ok
 }
 
 func (rf *Raft) sendAppendEntriesRetry(
@@ -172,91 +164,5 @@ func (rf *Raft) sendAppendEntriesRetry(
 			rf.mu.Unlock()
 		}
 	}
-	return ok
-}
-
-func (rf *Raft) sendAppendEntriesRetryWithLock(
-	server int,
-	args *AppendEntriesArgs,
-	reply *AppendEntriesReply,
-	retriedTimes int) bool {
-	if COUNT_RPC {
-		rf.rpcCount += 1
-		rf.debugLog(ALL, LOG,
-			"sendAppendEntries",
-			"send append entries to server %v, args: %+v, rpc count increase, now %v",
-			server, args, rf.rpcCount)
-	}
-	rf.mu.Unlock()
-	ok := rf.peers[server].Call("Raft.AppendEntriesHandler", args, reply)
-	rf.mu.Lock()
-	if COUNT_RPC {
-		rf.rpcCount -= 1
-		rf.debugLog(ALL, LOG,
-			"sendAppendEntries", "received append entries reply from server %v, rpc count decrease, now: %v",
-			server, rf.rpcCount)
-	}
-	for !ok && !rf.killed() && retriedTimes > 0 {
-		time.Sleep(RPC_RESEND_DURATION * time.Millisecond)
-		if COUNT_RPC {
-			rf.mu.Lock()
-			rf.rpcCount += 1
-			rf.debugLog(ALL, LOG,
-				"sendAppendEntries", "trying to resend append entries to server %v, rpc count increase, now %v",
-				server, rf.rpcCount)
-			rf.mu.Unlock()
-		}
-		ok = rf.peers[server].Call("Raft.AppendEntriesHandler", args, reply)
-		retriedTimes -= 1
-		if COUNT_RPC {
-			rf.mu.Lock()
-			rf.rpcCount -= 1
-			rf.debugLog(ALL, LOG,
-				"sendAppendEntries", "received send append entries reply from server %v, rpc count decrease, now %v",
-				server, rf.rpcCount)
-			rf.mu.Unlock()
-		}
-	}
-	return ok
-}
-
-func (rf *Raft) sendAppendEntriesRetryNotThreadingSafe(
-	server int,
-	args *AppendEntriesArgs,
-	reply *AppendEntriesReply,
-	retriedTimes int) bool {
-	startTime := time.Now()
-	if COUNT_RPC {
-		rf.rpcCount += 1
-		rf.debugLog(ALL, LOG,
-			"sendAppendEntries", "send append entries to server %v, rpc count increase, now %v",
-			server, rf.rpcCount)
-	}
-	ok := rf.peers[server].Call("Raft.AppendEntriesHandler", args, reply)
-	if COUNT_RPC {
-		rf.rpcCount -= 1
-		rf.debugLog(ALL, LOG,
-			"sendAppendEntries", "received append entries reply from server %v, rpc count decrease, now: %v",
-			server, rf.rpcCount)
-	}
-	for !ok && !rf.killed() && retriedTimes > 0 {
-		time.Sleep(RPC_RESEND_DURATION * time.Millisecond)
-		if COUNT_RPC {
-			rf.rpcCount += 1
-			rf.debugLog(ALL, LOG,
-				"sendAppendEntries", "trying to resend append entries to server %v, rpc count increase, now %v",
-				server, rf.rpcCount)
-		}
-		ok = rf.peers[server].Call("Raft.AppendEntriesHandler", args, reply)
-		retriedTimes -= 1
-		if COUNT_RPC {
-			rf.rpcCount -= 1
-			rf.debugLog(ALL, LOG,
-				"sendAppendEntries", "received send append entries reply from server %v, rpc count decrease, now %v",
-				server, rf.rpcCount)
-		}
-	}
-	duration := time.Since(startTime)
-	log.Printf("time cost: %v", duration)
 	return ok
 }
