@@ -106,7 +106,9 @@ type Raft struct {
 	logStartIdx  int
 
 	//  debug usage fields
-	rpcCount int
+	rpcCount            int
+	appendEntriesRPCIdx int
+	requestVoteRPCIdx   int
 }
 
 // GetState return currentTerm and whether this server
@@ -280,63 +282,121 @@ func (rf *Raft) logReplication() {
 	}
 }
 
+//func (rf *Raft) appendEntriesOnServer(serverID int) {
+//	rf.mu.Lock()
+//	defer rf.mu.Unlock()
+//	appendEntriesArgs := AppendEntriesArgs{}
+//	appendEntriesReply := AppendEntriesReply{}
+//	currentLastIndex := rf.log.getLastIndex()
+//	rf.prepareAppendEntriesArgs(&appendEntriesArgs, serverID)
+//	rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "Trying to append entries: %v to server %v",
+//		appendEntriesArgs.Entries, serverID)
+//	rf.mu.Unlock()
+//	ok := rf.sendAppendEntriesRetry(serverID, &appendEntriesArgs, &appendEntriesReply, 0)
+//	rf.mu.Lock()
+//	if !ok {
+//		rf.debugLog(ALL, LOG, "sendAppendEntries", "server %v does not response", serverID)
+//		return
+//	}
+//	for !appendEntriesReply.Success && !rf.killed() {
+//		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "Failed to append entries on server %v", serverID)
+//
+//		rf.checkAndSetTerm(appendEntriesReply.Term)
+//
+//		if rf.identity != LEADER {
+//			rf.debugLog(Lab2B, LOG, "logReplication", "No longer a leader, stop send appendEntries")
+//			return
+//		}
+//
+//		rf.nextIndex[serverID] -= 1
+//		if rf.nextIndex[serverID] <= rf.log.StartIdx {
+//			rf.debugLog(Lab2B, ERROR, "logReplication",
+//				"Trying to replicate logs on server %v failed, nextIndex becomes negative",
+//				serverID)
+//			rf.nextIndex[serverID] = rf.log.StartIdx
+//		}
+//		appendEntriesArgs = AppendEntriesArgs{}
+//		appendEntriesReply = AppendEntriesReply{}
+//		rf.prepareAppendEntriesArgs(&appendEntriesArgs, serverID)
+//		rf.debugLog(Lab2B, LOG, "logReplication", "Trying to re-append entries: %v to server %v",
+//			appendEntriesArgs.Entries, serverID)
+//		rf.persist()
+//		rf.mu.Unlock()
+//		ok = rf.sendAppendEntriesRetry(serverID, &appendEntriesArgs, &appendEntriesReply, 0)
+//		rf.mu.Lock()
+//		if !ok {
+//			rf.debugLog(ALL, LOG, "sendAppendEntries", "server %v does not response", serverID)
+//			return
+//		}
+//	}
+//	if appendEntriesReply.Success {
+//		//mu.Lock()
+//		//replicatedServerNum += 1
+//		//mu.Unlock()
+//		//cond.Broadcast()
+//		if rf.nextIndex[serverID] < currentLastIndex+1 {
+//			rf.nextIndex[serverID] = currentLastIndex + 1
+//		}
+//		if rf.matchIndex[serverID] < currentLastIndex {
+//			rf.matchIndex[serverID] = currentLastIndex
+//		}
+//		rf.debugLog(Lab2B, LOG, "logReplication",
+//			"Succeed to send appendEntries to server %v, nextIndex updated to: %v, matchIndex:%v",
+//			serverID, rf.nextIndex[serverID], rf.matchIndex[serverID])
+//		rf.persist()
+//	}
+//}
+
 func (rf *Raft) appendEntriesOnServer(serverID int) {
 	rf.mu.Lock()
-	var appendEntriesArgs AppendEntriesArgs
-	var appendEntriesReply AppendEntriesReply
-	currentLastIndex := rf.log.getLastIndex()
+	defer rf.mu.Unlock()
+	defer rf.persist()
+	appendEntriesReply := AppendEntriesReply{}
+	appendEntriesArgs := AppendEntriesArgs{}
 	rf.prepareAppendEntriesArgs(&appendEntriesArgs, serverID)
 	rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "Trying to append entries: %v to server %v",
 		appendEntriesArgs.Entries, serverID)
+
 	rf.mu.Unlock()
-
-	rf.sendAppendEntries(serverID, &appendEntriesArgs, &appendEntriesReply)
-
+	ok := rf.sendAppendEntriesRetry(serverID, &appendEntriesArgs, &appendEntriesReply, 0)
 	rf.mu.Lock()
-	for !appendEntriesReply.Success && !rf.killed() {
-		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "Failed to append entries on server %v", serverID)
 
-		rf.checkAndSetTerm(appendEntriesReply.Term)
+	if !ok {
+		rf.debugLog(ALL, LOG, "AppendEntriesOnServer", "server %v does not response", serverID)
+		return
+	}
 
-		if rf.identity != LEADER {
-			rf.debugLog(Lab2B, LOG, "logReplication", "No longer a leader, stop send appendEntries")
-			rf.mu.Unlock()
-			return
-		}
+	rf.checkAndSetTerm(appendEntriesReply.Term)
 
-		rf.nextIndex[serverID] -= 1
-		if rf.nextIndex[serverID] <= rf.log.StartIdx {
-			rf.debugLog(Lab2B, ERROR, "logReplication",
+	if rf.currentTerm > appendEntriesArgs.Term {
+		rf.debugLog(ALL, LOG, "sendAppendEntries", "Outdated rpc, term changed from %v to %v",
+			appendEntriesArgs.Term, rf.currentTerm)
+		return
+	}
+
+	if rf.identity != LEADER {
+		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "No longer a leader, stop send appendEntries")
+		return
+	}
+
+	if !appendEntriesReply.Success {
+		rf.nextIndex[serverID] = Min(appendEntriesArgs.PrevLogIndex, rf.nextIndex[serverID])
+		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer",
+			"Trying to replicate logs on server %v failed, nextIndex back to %v",
+			serverID, rf.nextIndex[serverID])
+		if rf.nextIndex[serverID] < rf.log.StartIdx {
+			rf.debugLog(Lab2B, ERROR, "appendEntriesOnServer",
 				"Trying to replicate logs on server %v failed, nextIndex becomes negative",
 				serverID)
-			rf.nextIndex[serverID] = rf.log.StartIdx
+			return
 		}
-
-		rf.prepareAppendEntriesArgs(&appendEntriesArgs, serverID)
-		appendEntriesReply = AppendEntriesReply{}
-		rf.debugLog(Lab2B, LOG, "logReplication", "Trying to re-append entries: %v to server %v",
-			appendEntriesArgs.Entries, serverID)
-		rf.persist()
-		rf.mu.Unlock()
-		rf.sendAppendEntries(serverID, &appendEntriesArgs, &appendEntriesReply)
-		rf.mu.Lock()
-	}
-	if appendEntriesReply.Success {
-		//mu.Lock()
-		//replicatedServerNum += 1
-		//mu.Unlock()
-		//cond.Broadcast()
-		if rf.nextIndex[serverID] < currentLastIndex+1 {
-			rf.nextIndex[serverID] = currentLastIndex + 1
-		}
-		if rf.matchIndex[serverID] < currentLastIndex {
-			rf.matchIndex[serverID] = currentLastIndex
-		}
-		rf.debugLog(Lab2B, LOG, "logReplication",
+	} else {
+		addedLastIndex := appendEntriesArgs.PrevLogIndex + len(appendEntriesArgs.Entries)
+		rf.nextIndex[serverID] = Max(addedLastIndex+1, rf.nextIndex[serverID])
+		rf.matchIndex[serverID] = Max(addedLastIndex, rf.matchIndex[serverID])
+		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer",
 			"Succeed to send appendEntries to server %v, nextIndex updated to: %v, matchIndex:%v",
 			serverID, rf.nextIndex[serverID], rf.matchIndex[serverID])
-		rf.persist()
-		rf.mu.Unlock()
 	}
 }
 
@@ -373,12 +433,12 @@ func (rf *Raft) ticker() {
 		if rf.identity == LEADER {
 			rf.claimAuthority()
 			rf.resetTimer()
-			go rf.tryCommit()
+			rf.tryCommit()
 		} else if rf.remainsTime <= 0 {
 			rf.startElection()
 			rf.resetTimer()
 		}
-		go rf.tryApply()
+		rf.tryApply()
 		rf.mu.Unlock()
 		time.Sleep(TICK_DURATION * time.Millisecond)
 		rf.mu.Lock()
@@ -390,11 +450,9 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) tryCommit() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.debugLog(Lab2B, LOG, "tryCommit", "Trying to commit commands")
 	majorityMatchIdx := rf.log.getLastIndex()
-	for majorityMatchIdx >= rf.log.StartIdx {
+	for majorityMatchIdx > rf.commitIndex {
 		if rf.log.getLogTermByIndex(majorityMatchIdx) != rf.currentTerm {
 			rf.debugLog(Lab2B, LOG, "tryCommit", "Term mismatched")
 			majorityMatchIdx -= 1
@@ -416,8 +474,6 @@ func (rf *Raft) tryCommit() {
 }
 
 func (rf *Raft) tryApply() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.debugLog(Lab2B, LOG, "tryApply", "Trying to apply commands, lastApplied: %v, commitIndex %v",
 		rf.lastApplied, rf.commitIndex)
 	for rf.commitIndex > rf.lastApplied {
@@ -432,9 +488,10 @@ func (rf *Raft) tryApply() {
 		applyMsg.Command = lastAppliedLog.Command
 		applyMsg.CommandIndex = rf.lastApplied + 1
 		rf.lastApplied += 1
-		rf.mu.Unlock()
+		//go func() {
+		//TODO: fix possible deadlock
 		rf.applyChannel <- applyMsg
-		rf.mu.Lock()
+		//}()
 		rf.debugLog(Lab2B, LOG, "tryApply", "Applied command, Message: %+v", applyMsg)
 	}
 }
@@ -455,16 +512,22 @@ func (rf *Raft) startElection() {
 	rf.currentTerm += 1
 	rf.identity = CANDIDATE
 	rf.votedFor = rf.me
+	currentTerm := rf.currentTerm
 	go func() {
 		isWinner := rf.requestVotes()
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
+		if rf.currentTerm > currentTerm {
+			return
+		}
 		if isWinner {
 			if rf.identity == CANDIDATE {
 				rf.becomeLeader()
 			}
 		} else {
-			rf.becomeFollower()
+			if rf.identity == CANDIDATE {
+				rf.becomeFollower()
+			}
 		}
 	}()
 }
@@ -487,14 +550,17 @@ func (rf *Raft) requestVotes() bool {
 
 		go func(i int) {
 			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			defer rf.persist()
 			var requestVoteArgs RequestVoteArgs
 			var requestVoteReply RequestVoteReply
 			rf.prepareRequestVoteArgs(&requestVoteArgs)
 			rf.mu.Unlock()
-			rf.sendRequestVote(i, &requestVoteArgs, &requestVoteReply)
+			ok := rf.sendRequestVoteRetry(i, &requestVoteArgs, &requestVoteReply, 0)
 			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			defer rf.persist()
+			if !ok {
+				rf.debugLog(ALL, LOG, "sendRequestVote", "server %v does not response")
+			}
 			rf.checkAndSetTerm(requestVoteReply.Term)
 			mu.Lock()
 			defer mu.Unlock()
@@ -563,6 +629,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.identity = FOLLOWER
 	rf.nextIndex = make([]int, peersNum)
 	rf.matchIndex = make([]int, peersNum)
+	//rf.appendEntriesRPCIdx = make([]int, peersNum)
+	//rf.requestVoteRPCIdx = make([]int, peersNum)
 	rf.applyChannel = applyCh
 	rf.logStartIdx = 1
 

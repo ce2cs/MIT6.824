@@ -9,6 +9,9 @@ type RequestVoteArgs struct {
 	CandidateID  int
 	LastLogIndex int
 	LastLogTerm  int
+
+	// debug info
+	Idx int
 }
 
 type RequestVoteReply struct {
@@ -27,6 +30,10 @@ func (rf *Raft) prepareRequestVoteArgs(requestVoteArgs *RequestVoteArgs) {
 	requestVoteArgs.Term = rf.currentTerm
 	requestVoteArgs.LastLogIndex = rf.log.getLastIndex()
 	requestVoteArgs.LastLogTerm = rf.log.getLogTermByIndex(requestVoteArgs.LastLogIndex)
+
+	// debug info
+	requestVoteArgs.Idx = rf.requestVoteRPCIdx
+	rf.requestVoteRPCIdx += 1
 }
 
 func (rf *Raft) RequestVoteHandler(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -34,7 +41,7 @@ func (rf *Raft) RequestVoteHandler(args *RequestVoteArgs, reply *RequestVoteRepl
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
-	rf.debugLog(Lab2A, LOG, "RequestVoteHandler", "Got vote request")
+	rf.debugLog(Lab2A, LOG, "RequestVoteHandler", "Got vote request, args: %+v", args)
 	rf.checkAndSetTerm(args.Term)
 	reply.Term = rf.currentTerm
 	lastEntryIndex := rf.log.getLastIndex()
@@ -93,7 +100,9 @@ func (rf *Raft) RequestVoteHandler(args *RequestVoteArgs, reply *RequestVoteRepl
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) {
+func (rf *Raft) sendRequestVote(server int,
+	args *RequestVoteArgs,
+	reply *RequestVoteReply) bool {
 	if COUNT_RPC {
 		rf.mu.Lock()
 		rf.rpcCount += 1
@@ -111,7 +120,30 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			server, rf.rpcCount)
 		rf.mu.Unlock()
 	}
-	for !ok && !rf.killed() {
+	return ok
+}
+func (rf *Raft) sendRequestVoteRetry(server int,
+	args *RequestVoteArgs,
+	reply *RequestVoteReply,
+	retriedTimes int) bool {
+	if COUNT_RPC {
+		rf.mu.Lock()
+		rf.rpcCount += 1
+		rf.debugLog(ALL, LOG,
+			"sendRequestVote", "send request vote to server %v, args: %+v rpc count increase, now %v",
+			server, args, rf.rpcCount)
+		rf.mu.Unlock()
+	}
+	ok := rf.peers[server].Call("Raft.RequestVoteHandler", args, reply)
+	if COUNT_RPC {
+		rf.mu.Lock()
+		rf.rpcCount -= 1
+		rf.debugLog(ALL, LOG,
+			"sendRequestVote", "received request vote reply from server %v, rpc count decrease, now: %v",
+			server, rf.rpcCount)
+		rf.mu.Unlock()
+	}
+	for !ok && !rf.killed() && retriedTimes > 0 {
 		time.Sleep(RPC_RESEND_DURATION * time.Millisecond)
 		if COUNT_RPC {
 			rf.mu.Lock()
@@ -122,6 +154,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			rf.mu.Unlock()
 		}
 		ok = rf.peers[server].Call("Raft.RequestVoteHandler", args, reply)
+		retriedTimes -= 1
 		if COUNT_RPC {
 			rf.mu.Lock()
 			rf.rpcCount -= 1
@@ -136,4 +169,5 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	//	"server %v received vote request, vote result is %v",
 	//	server, reply.VoteGranted)
 	//rf.mu.Unlock()
+	return ok
 }

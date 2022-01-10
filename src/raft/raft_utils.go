@@ -24,9 +24,10 @@ func (p DebugPart) String() string {
 	return parts[i]
 }
 
-const DEBUG = true
+const DEBUG = false
 const DEBUG_PART = ALL
-const COUNT_RPC = true
+
+const COUNT_RPC = false
 
 const MAX_TERM_DURATION = 600
 const MIN_TERM_DURATION = 300

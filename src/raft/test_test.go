@@ -573,11 +573,13 @@ func TestBackupSelfDefined(t *testing.T) {
 	for i := 0; i < servers; i++ {
 		cfg.disconnect(i)
 	}
+	log.Printf("Test Scripts: disconnected all servers")
+
 	cfg.connect((leader1 + 0) % servers)
 	cfg.connect((leader1 + 1) % servers)
 	cfg.connect(other)
 
-	log.Printf("Test Scripts: disconnected 3 servers: %v, %v, %v",
+	log.Printf("Test Scripts: reconnected 3 servers: %v, %v, %v",
 		(leader1+0)%servers,
 		(leader1+1)%servers,
 		other)
@@ -989,13 +991,15 @@ func TestFigure8Unreliable2C(t *testing.T) {
 }
 
 func TestFigure8Unreliable2CWithLog(t *testing.T) {
+	commandIdx := 0
 	servers := 5
 	cfg := make_config(t, servers, true, false)
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2C): Figure 8 (unreliable)")
 
-	cfg.one(rand.Int()%10000, 1, true)
+	cfg.one(commandIdx, 1, true)
+	commandIdx += 1
 
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
