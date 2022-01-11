@@ -482,8 +482,6 @@ func TestBackup2B(t *testing.T) {
 	cfg.end()
 }
 
-// Self defined test
-
 func TestCount2B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -1014,6 +1012,8 @@ func internalChurn(t *testing.T, unreliable bool) {
 
 func TestReliableChurn2C(t *testing.T) {
 	internalChurn(t, false)
+	//rand.Seed(0)
+	//internalChurnWithLog(t, false)
 }
 
 func TestUnreliableChurn2C(t *testing.T) {

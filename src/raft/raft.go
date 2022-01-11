@@ -279,61 +279,54 @@ func (rf *Raft) appendEntries() {
 		if i == rf.me {
 			continue
 		}
-		go rf.appendEntriesOnServer(i)
+		args := AppendEntriesArgs{}
+		reply := AppendEntriesReply{}
+		rf.prepareAppendEntriesArgs(&args, i)
+		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "Trying to send: %+v to server %v", args, i)
+		go rf.appendEntriesOnServer(i, &args, &reply)
 	}
 }
 
-func (rf *Raft) appendEntriesOnServer(serverID int) {
+func (rf *Raft) appendEntriesOnServer(serverID int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	ok := rf.sendAppendEntriesRetry(serverID, args, reply, 0)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
-
-	if rf.identity != LEADER {
-		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "No longer a leader, stop send appendEntries")
-		return
-	}
-
-	appendEntriesReply := AppendEntriesReply{}
-	appendEntriesArgs := AppendEntriesArgs{}
-	rf.prepareAppendEntriesArgs(&appendEntriesArgs, serverID)
-	rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "Trying to send: %+v to server %v",
-		appendEntriesReply, serverID)
-
-	rf.mu.Unlock()
-	ok := rf.sendAppendEntriesRetry(serverID, &appendEntriesArgs, &appendEntriesReply, 0)
-	rf.mu.Lock()
 
 	if !ok {
 		rf.debugLog(ALL, LOG, "AppendEntriesOnServer", "server %v does not response", serverID)
 		return
 	}
 
-	rf.checkAndSetTerm(appendEntriesReply.Term)
-
-	if rf.currentTerm > appendEntriesArgs.Term {
+	if rf.currentTerm > reply.Term {
 		rf.debugLog(ALL, LOG, "sendAppendEntries", "Outdated rpc, term changed from %v to %v",
-			appendEntriesArgs.Term, rf.currentTerm)
+			reply.Term, rf.currentTerm)
+		return
+	} else if rf.currentTerm < reply.Term {
+		rf.checkAndSetTerm(reply.Term)
 		return
 	}
 
-	if !appendEntriesReply.Success {
+	if !reply.Success {
+		fastBackIdx := rf.getFastBackIdx(reply)
 
-		fastBackIdx := rf.getFastBackIdx(&appendEntriesReply)
-
-		rf.nextIndex[serverID] = Min(appendEntriesArgs.PrevLogIndex,
+		rf.nextIndex[serverID] = Min(args.PrevLogIndex,
 			rf.nextIndex[serverID],
 			fastBackIdx)
 		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer",
 			"Trying to replicate logs on server %v failed, nextIndex back to %v",
 			serverID, rf.nextIndex[serverID])
+
 		if rf.nextIndex[serverID] < rf.log.StartIdx {
 			rf.debugLog(Lab2B, ERROR, "appendEntriesOnServer",
-				"Trying to replicate logs on server %v failed, nextIndex becomes negative",
-				serverID)
-			return
+				"Trying to replicate logs on server %v failed, nextIndex becomes negative, fastBackIdx: %v, "+
+					"args.PrevLogIndex: %v, reply: %+v",
+				serverID, args.PrevLogIndex, reply)
+			rf.nextIndex[serverID] = rf.log.StartIdx
+			//return
 		}
 	} else {
-		addedLastIndex := appendEntriesArgs.PrevLogIndex + len(appendEntriesArgs.Entries)
+		addedLastIndex := args.PrevLogIndex + len(args.Entries)
 		rf.nextIndex[serverID] = Max(addedLastIndex+1, rf.nextIndex[serverID])
 		rf.matchIndex[serverID] = Max(addedLastIndex, rf.matchIndex[serverID])
 		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer",
@@ -344,7 +337,7 @@ func (rf *Raft) appendEntriesOnServer(serverID int) {
 
 func (rf *Raft) getFastBackIdx(reply *AppendEntriesReply) int {
 	if reply.XTerm == -1 {
-		return reply.XLogLength
+		return reply.XLogLength + rf.log.StartIdx
 	} else if !rf.log.hasTerm(reply.XTerm) {
 		return reply.XIdx
 	} else {
