@@ -1,6 +1,8 @@
 package raft
 
 import (
+	"6.824/labgob"
+	"bytes"
 	"fmt"
 	"log"
 	"math/rand"
@@ -58,6 +60,45 @@ func (rf *Raft) becomeLeader() {
 	rf.resetTimer()
 }
 
+func (rf *Raft) preparePersistState() []byte {
+
+	rf.debugLog(ALL, LOG, "persist",
+		"Start persisting data:\ncurrentTerm: %v, votedFor: %v, log: %v, "+
+			"lastIncludedIndex: %v, lastIncludedTerm: %v",
+		rf.currentTerm,
+		rf.votedFor,
+		rf.log,
+		rf.lastIncludedIndex,
+		rf.lastIncludedTerm)
+
+	writer := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(writer)
+	err := encoder.Encode(rf.currentTerm)
+	if err != nil {
+		rf.debugLog(ALL, ERROR, "persist", "Failed to encode current term :%v", rf.currentTerm)
+	}
+	err = encoder.Encode(rf.votedFor)
+	if err != nil {
+		rf.debugLog(ALL, ERROR, "persist", "Failed to encode votedFor :%v", rf.votedFor)
+	}
+	err = encoder.Encode(rf.log)
+	if err != nil {
+		rf.debugLog(ALL, ERROR, "persist", "Failed to encode logs: %v", rf.log)
+	}
+
+	// For lab 2D
+	err = encoder.Encode(rf.lastIncludedIndex)
+	if err != nil {
+		rf.debugLog(ALL, ERROR, "persist", "Failed to encode lastIncludeIndex: %v", rf.lastIncludedIndex)
+	}
+	err = encoder.Encode(rf.lastIncludedTerm)
+	if err != nil {
+		rf.debugLog(ALL, ERROR, "persist", "Failed to encode lastInclude: %v", rf.lastIncludedTerm)
+	}
+
+	return writer.Bytes()
+}
+
 func (rf *Raft) debugLog(part DebugPart, logType string, funcName string, format string, a ...interface{}) {
 	if DEBUG && (part == DEBUG_PART || part == ALL || DEBUG_PART == ALL) {
 		prefix := fmt.Sprintf("%v[Mili: %v][%v][ServerID: %v][Term: %v][ServerIdentity:%v][Function:%v] INFO: ",
@@ -84,3 +125,12 @@ func (rf *Raft) checkAndSetTerm(term int) {
 		rf.becomeFollower()
 	}
 }
+
+//func (rf *Raft) asyncApply(msg ApplyMsg) {
+//	rf.msgBuffer = append(rf.msgBuffer, msg)
+//	popped := rf.msgBuffer[0]
+//	rf.msgBuffer = rf.msgBuffer[1:]
+//	go func() {
+//		rf.applyChannel <- popped
+//	}()
+//}

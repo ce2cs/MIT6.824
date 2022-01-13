@@ -41,11 +41,20 @@ func (logs *CommandLogs) sliceToEnd(startIdx int) []LogEntry {
 }
 
 func (logs *CommandLogs) deleteFromIdx(startIdx int) {
-	arrayIdx := logs.getArrayIdx(startIdx)
-	if arrayIdx > logs.getLength() {
+	if startIdx > logs.getLastIndex() {
 		return
 	}
+	arrayIdx := logs.getArrayIdx(startIdx)
 	logs.Logs = logs.Logs[:arrayIdx]
+}
+
+func (logs *CommandLogs) deleteUntilIndex(untilIdx int) {
+	if untilIdx > logs.getLastIndex() {
+		logs.Logs = make([]LogEntry, 0)
+		return
+	}
+	arrayIdx := logs.getArrayIdx(untilIdx)
+	logs.Logs = logs.Logs[arrayIdx:]
 }
 
 func (logs *CommandLogs) removeAfterNInclusive(n int) {
@@ -56,7 +65,7 @@ func (logs *CommandLogs) removeAfterNInclusive(n int) {
 	if arrayIdx >= len(logs.Logs) {
 		return
 	}
-	logs.Logs = logs.Logs[:n]
+	logs.Logs = logs.Logs[:arrayIdx]
 }
 
 func (logs *CommandLogs) getFirstIndexByTerm(term int) int {

@@ -27,16 +27,18 @@ type AppendEntriesReply struct {
 	Success bool
 
 	// fast backup info
-	XTerm      int
-	XIdx       int
-	XLogLength int
+	FoundConflict bool
+	XTerm         int
+	XIdx          int
+	XLastIndex    int
 }
 
 func (rf *Raft) prepareAppendEntriesArgs(appendEntriesArgs *AppendEntriesArgs, serverID int) {
 	appendEntriesArgs.Term = rf.currentTerm
 	appendEntriesArgs.LeaderID = rf.me
 	appendEntriesArgs.PrevLogIndex = rf.nextIndex[serverID] - 1
-	appendEntriesArgs.PrevLogTerm = rf.log.getLogTermByIndex(appendEntriesArgs.PrevLogIndex)
+	//TODO: may add some code to judge whether prevLogIndex is out of our log
+	appendEntriesArgs.PrevLogTerm = Max(rf.log.getLogTermByIndex(appendEntriesArgs.PrevLogIndex), rf.lastIncludedTerm)
 	appendEntriesArgs.LeaderCommitIndex = rf.commitIndex
 	//appendEntriesArgs.Entries = make([]LogEntry, 0)
 	appendedLogs := rf.log.sliceToEnd(rf.nextIndex[serverID])
@@ -69,13 +71,20 @@ func (rf *Raft) AppendEntriesHandler(args *AppendEntriesArgs, reply *AppendEntri
 		rf.resetTimer()
 	}
 
-	termNeedMatch := rf.log.getLogTermByIndex(args.PrevLogIndex)
+	//TODO: may add some code to judge whether prevLogIndex is out of our log
+	var termNeedMatch int
+	if args.PrevLogIndex == rf.lastIncludedIndex {
+		termNeedMatch = rf.lastIncludedTerm
+	} else {
+		termNeedMatch = rf.log.getLogTermByIndex(args.PrevLogIndex)
+	}
 	if reply.Success && args.PrevLogTerm != termNeedMatch {
+		reply.FoundConflict = true
 		reply.Success = false
 
 		reply.XTerm = termNeedMatch
 		reply.XIdx = rf.log.getFirstIndexByTerm(reply.XTerm)
-		reply.XLogLength = rf.log.getLength()
+		reply.XLastIndex = rf.log.getLastIndex()
 
 		//TODO specify info
 		rf.debugLog(ALL, LOG, "AppendEntriesHandler",
@@ -165,4 +174,64 @@ func (rf *Raft) sendAppendEntriesRetry(
 		}
 	}
 	return ok
+}
+
+func (rf *Raft) appendEntriesOnServer(serverID int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	ok := rf.sendAppendEntriesRetry(serverID, args, reply, 0)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	defer rf.persist()
+
+	if !ok {
+		rf.debugLog(ALL, LOG, "AppendEntriesOnServer", "server %v does not response", serverID)
+		return
+	}
+
+	if rf.currentTerm > reply.Term {
+		rf.debugLog(ALL, LOG, "sendAppendEntries", "Outdated rpc, term changed from %v to %v",
+			reply.Term, rf.currentTerm)
+		return
+	} else if rf.currentTerm < reply.Term {
+		rf.checkAndSetTerm(reply.Term)
+		return
+	}
+
+	if !reply.Success && reply.FoundConflict {
+
+		fastBackIdx := rf.getFastBackIdx(reply)
+
+		rf.nextIndex[serverID] = Min(args.PrevLogIndex,
+			rf.nextIndex[serverID],
+			fastBackIdx)
+		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer",
+			"Trying to replicate logs on server %v failed, nextIndex back to %v",
+			serverID, rf.nextIndex[serverID])
+
+		if rf.nextIndex[serverID] < rf.logStartIdx {
+			rf.debugLog(Lab2B, ERROR, "appendEntriesOnServer",
+				"Trying to replicate logs on server %v failed, nextIndex becomes negative, fastBackIdx: %v, "+
+					"args.PrevLogIndex: %v, reply: %+v",
+				serverID, args.PrevLogIndex, reply)
+			//rf.log.getLastIndexByTerm(reply.XTerm)
+			//rf.nextIndex[serverID] = 1
+			//return
+		}
+	} else {
+		addedLastIndex := args.PrevLogIndex + len(args.Entries)
+		rf.nextIndex[serverID] = Max(addedLastIndex+1, rf.nextIndex[serverID])
+		rf.matchIndex[serverID] = Max(addedLastIndex, rf.matchIndex[serverID])
+		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer",
+			"Succeed to send appendEntries to server %v, nextIndex updated to: %v, matchIndex:%v",
+			serverID, rf.nextIndex[serverID], rf.matchIndex[serverID])
+	}
+}
+
+func (rf *Raft) getFastBackIdx(reply *AppendEntriesReply) int {
+	if reply.XTerm == -1 {
+		return reply.XLastIndex + 1
+	} else if !rf.log.hasTerm(reply.XTerm) {
+		return reply.XIdx
+	} else {
+		return rf.log.getLastIndexByTerm(reply.XTerm)
+	}
 }

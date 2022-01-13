@@ -9,7 +9,6 @@ package raft
 //
 
 import (
-	"log"
 	"testing"
 )
 import "fmt"
@@ -585,8 +584,9 @@ loop:
 		total3 += cfg.rpcCount(j)
 	}
 
-	log.Printf("%v", total3-total2)
-	if total3-total2 > 3*20 {
+	i
+	total3-total2 > 3*20
+	{
 		t.Fatalf("too many RPCs (%v) for 1 second of idleness\n", total3-total2)
 	}
 

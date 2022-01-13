@@ -105,6 +105,10 @@ type Raft struct {
 	applyChannel chan ApplyMsg
 	logStartIdx  int
 
+	// fields for 2D
+	lastIncludedTerm  int
+	lastIncludedIndex int
+
 	//  debug usage fields
 	rpcCount            int
 	appendEntriesRPCIdx int
@@ -138,27 +142,7 @@ func (rf *Raft) persist() {
 	//rf.mu.Lock()
 	//defer rf.mu.Unlock()
 	startTime := time.Now()
-	rf.debugLog(Lab2C, LOG, "persist",
-		"Start persisting data:\ncurrentTerm: %v, votedFor: %v, log: %v",
-		rf.currentTerm,
-		rf.votedFor,
-		rf.log)
-
-	writer := new(bytes.Buffer)
-	encoder := labgob.NewEncoder(writer)
-	err := encoder.Encode(rf.currentTerm)
-	if err != nil {
-		rf.debugLog(Lab2C, ERROR, "persist", "Failed to encode current term :%v", rf.currentTerm)
-	}
-	err = encoder.Encode(rf.votedFor)
-	if err != nil {
-		rf.debugLog(Lab2C, ERROR, "persist", "Failed to encode votedFor :%v", rf.votedFor)
-	}
-	err = encoder.Encode(rf.log)
-	if err != nil {
-		rf.debugLog(Lab2C, ERROR, "persist", "Failed to encode logs: %v", rf.log)
-	}
-	data := writer.Bytes()
+	data := rf.preparePersistState()
 	rf.persister.SaveRaftState(data)
 	duration := time.Since(startTime).Milliseconds()
 	rf.debugLog(Lab2C, LOG, "persist",
@@ -194,25 +178,50 @@ func (rf *Raft) readPersist(data []byte) {
 	var log CommandLogs
 	err := decoder.Decode(&currentTerm)
 	if err != nil {
-		rf.debugLog(Lab2C, ERROR, "persist", "Failed to decode current term")
+		rf.debugLog(Lab2C, ERROR, "readPersist", "Failed to decode current term")
 	} else {
 		rf.currentTerm = currentTerm
-		rf.debugLog(Lab2C, LOG, "persist", "Succeed to decode current term: %v", rf.currentTerm)
+		rf.debugLog(Lab2C, LOG, "readPersist", "Succeed to decode current term: %v", rf.currentTerm)
 	}
 	err = decoder.Decode(&votedFor)
 	if err != nil {
-		rf.debugLog(Lab2C, ERROR, "persist", "Failed to decode votedFor")
+		rf.debugLog(Lab2C, ERROR, "readPersist", "Failed to decode votedFor")
 	} else {
 		rf.votedFor = votedFor
-		rf.debugLog(Lab2C, LOG, "persist", "Succeed to decode votedFor : %v", rf.votedFor)
+		rf.debugLog(Lab2C, LOG, "readPersist", "Succeed to decode votedFor : %v", rf.votedFor)
 	}
 	err = decoder.Decode(&log)
 	if err != nil {
-		rf.debugLog(Lab2C, ERROR, "persist", "Failed to decode logs")
+		rf.debugLog(Lab2C, ERROR, "readPersist", "Failed to decode logs")
 	} else {
 		rf.log = log
-		rf.debugLog(Lab2C, LOG, "persist", "Succeed to decode log: %v", rf.log)
+		rf.debugLog(Lab2C, LOG, "readPersist", "Succeed to decode log: %v", rf.log)
 	}
+
+	var lastIncludedIndex int
+	var lastIncludedTerm int
+
+	err = decoder.Decode(&lastIncludedIndex)
+	if err != nil {
+		rf.debugLog(Lab2D, ERROR, "readPersist", "Failed to decode lastIncludedIndex")
+	} else {
+		rf.lastIncludedIndex = lastIncludedIndex
+		rf.log.StartIdx = rf.lastIncludedIndex + 1
+		rf.lastApplied = lastIncludedIndex
+		rf.commitIndex = lastIncludedIndex
+		rf.debugLog(Lab2D, LOG, "readPersist", "Succeed to decode lastIncludedIndex: %v",
+			rf.lastIncludedIndex)
+	}
+
+	err = decoder.Decode(&lastIncludedTerm)
+	if err != nil {
+		rf.debugLog(Lab2D, ERROR, "readPersist", "Failed to decode lastIncludedTerm")
+	} else {
+		rf.lastIncludedTerm = lastIncludedTerm
+		rf.debugLog(Lab2D, LOG, "readPersist", "Succeed to decode lastIncludedTerm: %v",
+			rf.lastIncludedTerm)
+	}
+
 }
 
 //
@@ -223,7 +232,52 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 
 	// Your code here (2D).
 
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.debugLog(Lab2D, LOG, "CondInstallSnapshot",
+		"Got InstallSnapshot request, lastIncludedTerm: %v, lastIncludedIndex: %v, snapshot: %v, log: %v",
+		lastIncludedTerm, lastIncludedIndex, snapshot, rf.log)
+
+	if lastIncludedIndex <= rf.log.getLastIndex() &&
+		lastIncludedIndex >= rf.log.StartIdx &&
+		rf.log.getLogTermByIndex(lastIncludedIndex) == lastIncludedTerm {
+		rf.debugLog(Lab2D, LOG, "CondInstallSnapshot",
+			"refuse install snapshot: found matched index")
+		return false
+	}
+	rf.lastIncludedIndex = lastIncludedIndex
+	rf.lastIncludedTerm = lastIncludedTerm
+	rf.log.deleteUntilIndex(lastIncludedIndex + 1)
+	rf.log.StartIdx = lastIncludedIndex + 1
+
+	// Necessary ????
+	rf.lastApplied = Max(rf.lastApplied, lastIncludedIndex)
+	rf.commitIndex = Max(rf.commitIndex, lastIncludedIndex)
+
+	state := rf.preparePersistState()
+	rf.debugLog(Lab2D, LOG, "CondInstallSnapshot",
+		"Saved snapshot, lastIncludedTerm: %v, lastIncludedIndex: %v, snapshot: %v, logs: %+v",
+		lastIncludedIndex, lastIncludedTerm, snapshot, rf.log)
+	rf.persister.SaveStateAndSnapshot(state, snapshot)
 	return true
+}
+
+func (rf *Raft) applySnapshot(snapshot *[]byte, lastIncludedTerm int, lastIncludedIndex int) {
+	applyMsg := ApplyMsg{}
+	applyMsg.SnapshotValid = true
+	applyMsg.SnapshotTerm = lastIncludedTerm
+	applyMsg.SnapshotIndex = lastIncludedIndex
+	applyMsg.Snapshot = *snapshot
+	startTime := time.Now()
+	rf.debugLog(Lab2D, LOG, "applySnapshot",
+		"Adding applyMsg: %+v to apply channel",
+		applyMsg)
+	rf.mu.Unlock()
+	rf.applyChannel <- applyMsg
+	rf.mu.Lock()
+	duration := time.Since(startTime).Milliseconds()
+	rf.debugLog(Lab2D, LOG, "applySnapshot",
+		"Succeed to applyMsg: %+v to apply channel, cost %v milliseconds", applyMsg, duration)
 }
 
 // the service says it has created a snapshot that has
@@ -232,7 +286,26 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.debugLog(Lab2D, LOG, "Snapshot", "Got snapshot request, index: %v", index)
+	if index <= rf.lastIncludedIndex {
+		rf.debugLog(Lab2D, LOG, "Snapshot",
+			"reject snapshot from server: index: %v <= lastIncludedIndex: %v",
+			index,
+			rf.lastIncludedIndex)
+		return
+	}
+	rf.lastIncludedIndex = index
+	rf.lastIncludedTerm = rf.log.getLogTermByIndex(rf.lastIncludedIndex)
+	rf.debugLog(Lab2D, LOG, "Snapshot", "Before delete logs: %+v", rf.log)
+	rf.log.deleteUntilIndex(index + 1)
+	rf.log.StartIdx = rf.lastIncludedIndex + 1
+	rf.debugLog(Lab2D, LOG, "Snapshot", "saved snapshot, "+
+		"current lastIncludedIndex: %v, lastIncludedTerm: %v, logs: %+v, snapshot: %v",
+		rf.lastIncludedIndex, rf.lastIncludedTerm, rf.log, snapshot)
+	state := rf.preparePersistState()
+	rf.persister.SaveStateAndSnapshot(state, snapshot)
 }
 
 //
@@ -279,69 +352,20 @@ func (rf *Raft) appendEntries() {
 		if i == rf.me {
 			continue
 		}
-		args := AppendEntriesArgs{}
-		reply := AppendEntriesReply{}
-		rf.prepareAppendEntriesArgs(&args, i)
-		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "Trying to send: %+v to server %v", args, i)
-		go rf.appendEntriesOnServer(i, &args, &reply)
-	}
-}
-
-func (rf *Raft) appendEntriesOnServer(serverID int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	ok := rf.sendAppendEntriesRetry(serverID, args, reply, 0)
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	defer rf.persist()
-
-	if !ok {
-		rf.debugLog(ALL, LOG, "AppendEntriesOnServer", "server %v does not response", serverID)
-		return
-	}
-
-	if rf.currentTerm > reply.Term {
-		rf.debugLog(ALL, LOG, "sendAppendEntries", "Outdated rpc, term changed from %v to %v",
-			reply.Term, rf.currentTerm)
-		return
-	} else if rf.currentTerm < reply.Term {
-		rf.checkAndSetTerm(reply.Term)
-		return
-	}
-
-	if !reply.Success {
-		fastBackIdx := rf.getFastBackIdx(reply)
-
-		rf.nextIndex[serverID] = Min(args.PrevLogIndex,
-			rf.nextIndex[serverID],
-			fastBackIdx)
-		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer",
-			"Trying to replicate logs on server %v failed, nextIndex back to %v",
-			serverID, rf.nextIndex[serverID])
-
-		if rf.nextIndex[serverID] < rf.log.StartIdx {
-			rf.debugLog(Lab2B, ERROR, "appendEntriesOnServer",
-				"Trying to replicate logs on server %v failed, nextIndex becomes negative, fastBackIdx: %v, "+
-					"args.PrevLogIndex: %v, reply: %+v",
-				serverID, args.PrevLogIndex, reply)
-			rf.nextIndex[serverID] = rf.log.StartIdx
-			//return
+		if rf.nextIndex[i] < rf.log.StartIdx {
+			args := InstallSnapshotArgs{}
+			reply := InstallSnapshotReply{}
+			rf.prepareInstallSnapshotArgs(&args)
+			rf.debugLog(Lab2D, LOG, "appendEntriesOnServer",
+				"Trying to send installSnapshot: %+v to server %v", args, i)
+			go rf.installSnapshotArgsOnServer(i, &args, &reply)
+		} else {
+			args := AppendEntriesArgs{}
+			reply := AppendEntriesReply{}
+			rf.prepareAppendEntriesArgs(&args, i)
+			rf.debugLog(Lab2B, LOG, "appendEntriesOnServer", "Trying to send: %+v to server %v", args, i)
+			go rf.appendEntriesOnServer(i, &args, &reply)
 		}
-	} else {
-		addedLastIndex := args.PrevLogIndex + len(args.Entries)
-		rf.nextIndex[serverID] = Max(addedLastIndex+1, rf.nextIndex[serverID])
-		rf.matchIndex[serverID] = Max(addedLastIndex, rf.matchIndex[serverID])
-		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer",
-			"Succeed to send appendEntries to server %v, nextIndex updated to: %v, matchIndex:%v",
-			serverID, rf.nextIndex[serverID], rf.matchIndex[serverID])
-	}
-}
-
-func (rf *Raft) getFastBackIdx(reply *AppendEntriesReply) int {
-	if reply.XTerm == -1 {
-		return reply.XLogLength + rf.log.StartIdx
-	} else if !rf.log.hasTerm(reply.XTerm) {
-		return reply.XIdx
-	} else {
-		return rf.log.getLastIndexByTerm(reply.XTerm)
 	}
 }
 
@@ -435,7 +459,9 @@ func (rf *Raft) tryApply() {
 		rf.lastApplied += 1
 		//go func() {
 		//TODO: fix possible deadlock
+		rf.mu.Unlock()
 		rf.applyChannel <- applyMsg
+		rf.mu.Lock()
 		//}()
 		rf.debugLog(Lab2B, LOG, "tryApply", "Applied command, Message: %+v", applyMsg)
 	}
@@ -567,6 +593,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//rf.requestVoteRPCIdx = make([]int, peersNum)
 	rf.applyChannel = applyCh
 	rf.logStartIdx = 1
+	rf.lastIncludedTerm = -1
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
