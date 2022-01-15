@@ -33,7 +33,7 @@ const COUNT_RPC = false
 
 const MAX_TERM_DURATION = 600
 const MIN_TERM_DURATION = 300
-const TICK_DURATION = 50
+const TICK_DURATION = 40
 const RPC_RESEND_DURATION = 100
 const ERROR = "Error"
 const LOG = "LOG"
