@@ -33,7 +33,7 @@ const COUNT_RPC = false
 
 const MAX_TERM_DURATION = 600
 const MIN_TERM_DURATION = 300
-const TICK_DURATION = 40
+const TICK_DURATION = 50
 const RPC_RESEND_DURATION = 100
 const ERROR = "Error"
 const LOG = "LOG"
@@ -123,6 +123,17 @@ func (rf *Raft) checkAndSetTerm(term int) {
 		rf.currentTerm = term
 		rf.votedFor = -1
 		rf.becomeFollower()
+	}
+}
+
+func (rf *Raft) addToApplyBufferChannel(msg ApplyMsg) {
+	rf.applyBufferChannel <- msg
+}
+
+func (rf *Raft) fetchFromBufferToChannel() {
+	for !rf.killed() {
+		msg := <-rf.applyBufferChannel
+		rf.applyChannel <- msg
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"time"
 )
 import "crypto/rand"
 import "math/big"
@@ -62,7 +61,6 @@ func (ck *Clerk) Get(key string) string {
 		getArgs.ClientID = ck.me
 		getArgs.SequenceNum = ck.sequenceNum
 		getReply := GetReply{}
-		ck.sequenceNum += 1
 		ck.debugLog(LOG, "Get", "Sending get RPC to server %v, args: %+v", serverID, getArgs)
 		ok := ck.servers[serverID].Call("KVServer.Get", &getArgs, &getReply)
 
@@ -81,7 +79,7 @@ func (ck *Clerk) Get(key string) string {
 
 		} else {
 			ck.currentLeader = serverID
-
+			ck.sequenceNum += 1
 			switch getReply.Err {
 			case OK:
 				ck.debugLog(LOG, "Get", "Succeed to send get request to server %v, response value: %v", serverID, getReply.Value)
@@ -115,20 +113,17 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		putAppendArgs.Op = op
 		putAppendArgs.ClientID = ck.me
 		putAppendArgs.SequenceNum = ck.sequenceNum
-		ck.sequenceNum += 1
 
 		putAppendReply := PutAppendReply{}
 		ck.debugLog(LOG, "PutAppend", "Sending putAppend RPC to server %v, args: %+v", serverID, putAppendArgs)
-		startTime := time.Now()
 		ok := ck.servers[serverID].Call("KVServer.PutAppend", &putAppendArgs, &putAppendReply)
-		costTime := time.Since(startTime)
 
 		if !ok || putAppendReply.Err == ErrWrongLeader {
 			if !ok {
-				ck.debugLog(LOG, "PutAppend", "Failed to get RPC response from server %v, cost %v milliseconds", serverID, costTime)
+				ck.debugLog(LOG, "PutAppend", "Failed to get RPC response from server %v", serverID)
 			}
 			if putAppendReply.Err == ErrWrongLeader {
-				ck.debugLog(LOG, "PutAppend", "Failed to send putAppend request to server %v: wrong leader, cost %v milliseconds", serverID, costTime)
+				ck.debugLog(LOG, "PutAppend", "Failed to send putAppend request to server %v: wrong leader", serverID)
 			}
 			serverID += 1
 			if serverID == len(ck.servers) {
@@ -136,7 +131,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			}
 		} else {
 			ck.currentLeader = serverID
-			ck.debugLog(LOG, "PutAppend", "Succeed to process PutAppend request on server %v, cost %v milliseconds", serverID, costTime)
+			ck.debugLog(LOG, "PutAppend", "Succeed to process PutAppend request on server %v", serverID)
+			ck.sequenceNum += 1
 			return
 		}
 	}

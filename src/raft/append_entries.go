@@ -73,7 +73,9 @@ func (rf *Raft) AppendEntriesHandler(args *AppendEntriesArgs, reply *AppendEntri
 
 	//TODO: may add some code to judge whether prevLogIndex is out of our log
 	var termNeedMatch int
-	if args.PrevLogIndex == rf.lastIncludedIndex {
+	if args.PrevLogIndex < rf.lastIncludedIndex {
+		return
+	} else if args.PrevLogIndex == rf.lastIncludedIndex {
 		termNeedMatch = rf.lastIncludedTerm
 	} else {
 		termNeedMatch = rf.log.getLogTermByIndex(args.PrevLogIndex)
@@ -90,6 +92,10 @@ func (rf *Raft) AppendEntriesHandler(args *AppendEntriesArgs, reply *AppendEntri
 		rf.debugLog(ALL, LOG, "AppendEntriesHandler",
 			"Append entries failed: log entry conflict\ncurrent log: %v, prevLogTerm: %v, prevLogIndex %v",
 			rf.log, args.PrevLogTerm, args.PrevLogIndex)
+		// bug: prevLogIndex might less than rf.log.StartIdx
+		//if args.PrevLogIndex >= rf.log.StartIdx {
+		//	rf.log.removeAfterNInclusive(args.PrevLogIndex)
+		//}
 		rf.log.removeAfterNInclusive(args.PrevLogIndex)
 	}
 
@@ -128,6 +134,7 @@ func (rf *Raft) AppendEntriesHandler(args *AppendEntriesArgs, reply *AppendEntri
 
 	rf.debugLog(ALL, LOG, "AppendEntriesHandler",
 		"Finished handle append entries request, reply: %+v, current log: %v", reply, rf.log)
+	rf.tryApply()
 }
 
 func (rf *Raft) sendAppendEntriesRetry(
@@ -223,6 +230,7 @@ func (rf *Raft) appendEntriesOnServer(serverID int, args *AppendEntriesArgs, rep
 		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer",
 			"Succeed to send appendEntries to server %v, nextIndex updated to: %v, matchIndex:%v",
 			serverID, rf.nextIndex[serverID], rf.matchIndex[serverID])
+		rf.tryCommit()
 	}
 }
 

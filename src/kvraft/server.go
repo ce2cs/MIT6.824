@@ -40,21 +40,40 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	commandResponse map[int]chan QueryResponse
-	clientLatestOP  map[int64]Op
-	storage         KVDatabase
+	commandResponse      map[int]chan QueryResponse
+	clientLatestResponse map[int64]QueryResponse
+	storage              KVDatabase
 }
 
 type QueryResponse struct {
-	value   string
-	err     Err
-	timeOut bool
+	value       string
+	err         Err
+	timeOut     bool
+	sequenceNum int
+}
+
+func (kv *KVServer) checkLatestOp(clientID int64, sequenceNum int) (QueryResponse, bool) {
+	latestRes := kv.clientLatestResponse[clientID]
+	if sequenceNum == latestRes.sequenceNum {
+		return kv.clientLatestResponse[clientID], true
+	} else {
+		return QueryResponse{}, false
+	}
 }
 
 // Get RPC handler
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	kv.mu.Lock()
 	kv.debugLog(LOG, "GetHandler", "Got get request, args: %+v", args)
+	latestRes, executed := kv.checkLatestOp(args.ClientID, args.SequenceNum)
+	if executed {
+		reply.Value = latestRes.value
+		reply.Err = latestRes.err
+		kv.debugLog(LOG, "GetHandler", "Request already handled, reply: %+v", reply)
+		kv.mu.Unlock()
+		return
+	}
 	command := Op{}
 	command.Key = args.Key
 	command.OpType = GET
@@ -64,27 +83,29 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		kv.debugLog(LOG, "GetHandler", "Current server is not leader, reply: %+v", reply)
+		kv.mu.Unlock()
 		return
 	} else {
-		kv.mu.Lock()
-		kv.debugLog(LOG, "GetHandler", "Accepted command: %+v, trying to get response from raft", command)
-		kv.commandResponse[commandIndex] = make(chan QueryResponse)
+		kv.debugLog(LOG, "GetHandler", "Accepted command: %+v, commandIndex: %v, trying to get response from raft", command, commandIndex)
+		ch := make(chan QueryResponse)
+		kv.commandResponse[commandIndex] = ch
 		go kv.monitorTimeout(commandIndex)
 		kv.mu.Unlock()
 		select {
-		case dataRes := <-kv.commandResponse[commandIndex]:
+		case res := <-ch:
 			kv.mu.Lock()
 			defer kv.mu.Unlock()
-			if dataRes.timeOut {
+			if res.timeOut {
 				reply.Err = ErrWrongLeader
 				delete(kv.commandResponse, commandIndex)
 				kv.debugLog(LOG, "GetHandler", "process command: %+v failed because of timeout, reply: %+v", command, reply)
 				return
 			}
-			reply.Value = dataRes.value
-			reply.Err = dataRes.err
-			kv.debugLog(LOG, "GetHandler", "process command: %+v succeed, current storage: %+v, reply: %+v", command, kv.storage, reply)
+			reply.Value = res.value
+			reply.Err = res.err
+			kv.clientLatestResponse[args.ClientID] = res
 			delete(kv.commandResponse, commandIndex)
+			kv.debugLog(LOG, "GetHandler", "process command: %+v succeed, current storage: %+v, reply: %+v", command, kv.storage, reply)
 			return
 		case <-kv.killedChan:
 			return
@@ -102,7 +123,9 @@ func (kv *KVServer) monitorTimeout(commandIndex int) {
 	} else {
 		res := QueryResponse{}
 		res.timeOut = true
+		kv.debugLog(LOG, "monitorTimeout", "Trying to add %+v to commandIndex: %v channel", res, commandIndex)
 		ch <- res
+		kv.debugLog(LOG, "monitorTimeout", "Added %+v to commandIndex: %v channel", res, commandIndex)
 	}
 }
 
@@ -110,12 +133,12 @@ func (kv *KVServer) fetchApplyMsg() {
 	for !kv.killed() {
 		select {
 		case applyMsg := <-kv.applyCh:
-			timeStamp := time.Now()
 			kv.mu.Lock()
 			kv.debugLog(LOG, "fetchApplyMsg", "Got apply message: %+v", applyMsg)
 			if applyMsg.CommandValid {
 				command := applyMsg.Command.(Op)
 				res := QueryResponse{}
+				res.sequenceNum = command.SequenceNum
 				switch command.OpType {
 				case GET:
 					res.value, res.err = kv.storage.get(command.Key)
@@ -126,12 +149,13 @@ func (kv *KVServer) fetchApplyMsg() {
 				}
 
 				ch, prs := kv.commandResponse[applyMsg.CommandIndex]
-				if prs {
-					ch <- res
-				}
 				kv.mu.Unlock()
+				if prs {
+					kv.debugLog(LOG, "fetchApplyMsg", "Trying to add %+v to commandIndex: %v channel", res, applyMsg.CommandIndex)
+					ch <- res
+					kv.debugLog(LOG, "fetchApplyMsg", "Added %+v to commandIndex: %v channel", res, applyMsg.CommandIndex)
+				}
 			}
-			kv.debugLog(LOG, "fetchApplyMsg", "Timer: process applyCh message cost: %v", time.Since(timeStamp))
 		case <-kv.killedChan:
 			return
 		}
@@ -141,43 +165,46 @@ func (kv *KVServer) fetchApplyMsg() {
 // Put&Append RPC handler
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	kv.mu.Lock()
 	kv.debugLog(LOG, "PutAppendHandler", "Got putAppend request, args: %+v", args)
+	latestRes, executed := kv.checkLatestOp(args.ClientID, args.SequenceNum)
+	if executed {
+		reply.Err = latestRes.err
+		kv.debugLog(LOG, "PutAppendHandler", "Request already handled, reply: %+v", reply)
+		kv.mu.Unlock()
+		return
+	}
 	command := Op{}
 	command.Key = args.Key
 	command.Value = args.Value
 	command.OpType = args.Op
 	command.SequenceNum = args.SequenceNum
 	command.ClientID = args.ClientID
-	timeStamp := time.Now()
 	commandIndex, _, isLeader := kv.rf.Start(command)
-	kv.debugLog(LOG, "PutAppendHandler", "Timer: start cost: %v", time.Since(timeStamp))
-	timeStamp = time.Now()
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		kv.debugLog(LOG, "PutAppendHandler", "Current server is not leader, reply: %+v", reply)
+		kv.mu.Unlock()
 		return
 	} else {
-		kv.mu.Lock()
-		kv.commandResponse[commandIndex] = make(chan QueryResponse)
+		ch := make(chan QueryResponse)
+		kv.commandResponse[commandIndex] = ch
 		go kv.monitorTimeout(commandIndex)
-		kv.debugLog(LOG, "PutAppendHandler", "Timer: create channel cost: %v", time.Since(timeStamp))
-		timeStamp = time.Now()
 		kv.mu.Unlock()
 		select {
-		case dataRes := <-kv.commandResponse[commandIndex]:
-			kv.debugLog(LOG, "PutAppendHandler", "Timer: get channel response channel cost: %v", time.Since(timeStamp))
-			timeStamp = time.Now()
+		case res := <-ch:
 			kv.mu.Lock()
 			defer kv.mu.Unlock()
-			if dataRes.timeOut {
+			if res.timeOut {
 				reply.Err = ErrWrongLeader
+				delete(kv.commandResponse, commandIndex)
 				kv.debugLog(LOG, "PutAppendHandler", "process command: %+v failed because of timeout, reply: %+v", command, reply)
 				return
 			}
-			reply.Err = dataRes.err
+			reply.Err = res.err
+			kv.clientLatestResponse[args.ClientID] = res
 			delete(kv.commandResponse, commandIndex)
 			kv.debugLog(LOG, "PutAppendHandler", "process command: %+v succeed, current storage: %+v, reply: %+v", command, kv.storage, reply)
-			kv.debugLog(LOG, "PutAppendHandler", "Timer: process reply cost: %v", time.Since(timeStamp))
 			return
 		case <-kv.killedChan:
 			return
@@ -240,7 +267,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.killedChan = make(chan interface{})
 	kv.storage = *NewKVDB()
 	kv.commandResponse = make(map[int]chan QueryResponse)
-	kv.clientLatestOP = make(map[int64]Op)
+	kv.clientLatestResponse = make(map[int64]QueryResponse)
 	go kv.fetchApplyMsg()
 	return kv
 }

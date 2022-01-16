@@ -113,6 +113,9 @@ type Raft struct {
 	rpcCount            int
 	appendEntriesRPCIdx int
 	requestVoteRPCIdx   int
+
+	//applyBuffer
+	applyBufferChannel chan ApplyMsg
 }
 
 // GetState return currentTerm and whether this server
@@ -238,13 +241,20 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 		"Got InstallSnapshot request, lastIncludedTerm: %v, lastIncludedIndex: %v, snapshot: %v, log: %v",
 		lastIncludedTerm, lastIncludedIndex, snapshot, rf.log)
 
-	if lastIncludedIndex <= rf.log.getLastIndex() &&
-		lastIncludedIndex >= rf.log.StartIdx &&
-		rf.log.getLogTermByIndex(lastIncludedIndex) == lastIncludedTerm {
+	if lastIncludedIndex <= rf.lastIncludedIndex {
 		rf.debugLog(Lab2D, LOG, "CondInstallSnapshot",
-			"refuse install snapshot: found matched index")
+			"refuse old snapshot")
 		return false
 	}
+
+	//if lastIncludedIndex <= rf.log.getLastIndex() &&
+	//	lastIncludedIndex >= rf.log.StartIdx &&
+	//	rf.log.getLogTermByIndex(lastIncludedIndex) == lastIncludedTerm {
+	//	rf.debugLog(Lab2D, LOG, "CondInstallSnapshot",
+	//		"refuse install snapshot: found matched index")
+	//} else {
+	//
+	//}
 	rf.lastIncludedIndex = lastIncludedIndex
 	rf.lastIncludedTerm = lastIncludedTerm
 	rf.log.deleteUntilIndex(lastIncludedIndex + 1)
@@ -402,12 +412,12 @@ func (rf *Raft) ticker() {
 		if rf.identity == LEADER {
 			rf.appendEntries()
 			rf.resetTimer()
-			rf.tryCommit()
+			//rf.tryCommit()
 		} else if rf.remainsTime <= 0 {
 			rf.startElection()
 			rf.resetTimer()
 		}
-		rf.tryApply()
+		//rf.tryApply()
 		rf.mu.Unlock()
 		time.Sleep(TICK_DURATION * time.Millisecond)
 		rf.mu.Lock()
@@ -440,6 +450,7 @@ func (rf *Raft) tryCommit() {
 		}
 		majorityMatchIdx -= 1
 	}
+	rf.tryApply()
 }
 
 func (rf *Raft) tryApply() {
@@ -459,9 +470,10 @@ func (rf *Raft) tryApply() {
 		rf.lastApplied += 1
 		//go func() {
 		//TODO: fix possible deadlock
-		rf.mu.Unlock()
-		rf.applyChannel <- applyMsg
-		rf.mu.Lock()
+		//rf.mu.Unlock()
+		//rf.applyChannel <- applyMsg
+		rf.applyBufferChannel <- applyMsg
+		//rf.mu.Lock()
 		//}()
 		rf.debugLog(Lab2B, LOG, "tryApply", "Applied command, Message: %+v", applyMsg)
 	}
@@ -599,7 +611,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
+	rf.applyBufferChannel = make(chan ApplyMsg, 100)
 	go rf.ticker()
+	go rf.fetchFromBufferToChannel()
 
 	return rf
 }
