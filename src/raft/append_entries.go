@@ -225,11 +225,13 @@ func (rf *Raft) appendEntriesOnServer(serverID int, args *AppendEntriesArgs, rep
 		}
 	} else {
 		addedLastIndex := args.PrevLogIndex + len(args.Entries)
+		prevNextIndex := rf.nextIndex[serverID]
+		prevMatchIndex := rf.matchIndex[serverID]
 		rf.nextIndex[serverID] = Max(addedLastIndex+1, rf.nextIndex[serverID])
 		rf.matchIndex[serverID] = Max(addedLastIndex, rf.matchIndex[serverID])
 		rf.debugLog(Lab2B, LOG, "appendEntriesOnServer",
-			"Succeed to send appendEntries to server %v, nextIndex updated to: %v, matchIndex:%v",
-			serverID, rf.nextIndex[serverID], rf.matchIndex[serverID])
+			"Succeed to send appendEntries to server %v, nextIndex updated from %v to %v, matchIndex from %v to %v",
+			serverID, prevNextIndex, rf.nextIndex[serverID], prevMatchIndex, rf.matchIndex[serverID])
 		rf.tryCommit()
 	}
 }

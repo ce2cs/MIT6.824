@@ -611,7 +611,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	rf.applyBufferChannel = make(chan ApplyMsg, 100)
+	rf.applyBufferChannel = make(chan ApplyMsg, 1000)
 	go rf.ticker()
 	go rf.fetchFromBufferToChannel()
 

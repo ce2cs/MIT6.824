@@ -1,9 +1,6 @@
 package kvraft
 
-import (
-	"6.824/porcupine"
-	"log"
-)
+import "6.824/porcupine"
 import "6.824/models"
 import "testing"
 import "strconv"
@@ -275,7 +272,6 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 					Append(cfg, myck, key, nv, opLog, cli)
 					if !randomkeys {
 						last = NextValue(last, nv)
-						log.Printf("last: %v\n", last)
 					}
 					j++
 				} else if randomkeys && (rand.Int()%1000) < 100 {

@@ -48,13 +48,12 @@ type KVServer struct {
 type QueryResponse struct {
 	value       string
 	err         Err
-	timeOut     bool
 	sequenceNum int
 }
 
-func (kv *KVServer) checkLatestOp(clientID int64, sequenceNum int) (QueryResponse, bool) {
-	latestRes := kv.clientLatestResponse[clientID]
-	if sequenceNum == latestRes.sequenceNum {
+func (kv *KVServer) checkLatestRes(clientID int64, sequenceNum int) (QueryResponse, bool) {
+	latestRes, prs := kv.clientLatestResponse[clientID]
+	if prs && sequenceNum <= latestRes.sequenceNum {
 		return kv.clientLatestResponse[clientID], true
 	} else {
 		return QueryResponse{}, false
@@ -66,7 +65,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	kv.mu.Lock()
 	kv.debugLog(LOG, "GetHandler", "Got get request, args: %+v", args)
-	latestRes, executed := kv.checkLatestOp(args.ClientID, args.SequenceNum)
+	latestRes, executed := kv.checkLatestRes(args.ClientID, args.SequenceNum)
 	if executed {
 		reply.Value = latestRes.value
 		reply.Err = latestRes.err
@@ -79,7 +78,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	command.OpType = GET
 	command.SequenceNum = args.SequenceNum
 	command.ClientID = args.ClientID
+	kv.debugLog(LOG, "PutAppendHandler", "--------blocked by start?????")
 	commandIndex, _, isLeader := kv.rf.Start(command)
+	kv.debugLog(LOG, "PutAppendHandler", "--------No!!!!")
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		kv.debugLog(LOG, "GetHandler", "Current server is not leader, reply: %+v", reply)
@@ -89,74 +90,22 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		kv.debugLog(LOG, "GetHandler", "Accepted command: %+v, commandIndex: %v, trying to get response from raft", command, commandIndex)
 		ch := make(chan QueryResponse)
 		kv.commandResponse[commandIndex] = ch
-		go kv.monitorTimeout(commandIndex)
 		kv.mu.Unlock()
 		select {
 		case res := <-ch:
 			kv.mu.Lock()
-			defer kv.mu.Unlock()
-			if res.timeOut {
-				reply.Err = ErrWrongLeader
-				delete(kv.commandResponse, commandIndex)
-				kv.debugLog(LOG, "GetHandler", "process command: %+v failed because of timeout, reply: %+v", command, reply)
-				return
-			}
 			reply.Value = res.value
 			reply.Err = res.err
-			kv.clientLatestResponse[args.ClientID] = res
 			delete(kv.commandResponse, commandIndex)
 			kv.debugLog(LOG, "GetHandler", "process command: %+v succeed, current storage: %+v, reply: %+v", command, kv.storage, reply)
+			kv.mu.Unlock()
+			return
+		case <-time.After(5 * time.Second):
+			kv.processTimeout(commandIndex)
+			reply.Err = ErrWrongLeader
 			return
 		case <-kv.killedChan:
-			return
-		}
-	}
-}
-
-func (kv *KVServer) monitorTimeout(commandIndex int) {
-	time.Sleep(10 * time.Second)
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	ch, ok := kv.commandResponse[commandIndex]
-	if !ok {
-		return
-	} else {
-		res := QueryResponse{}
-		res.timeOut = true
-		kv.debugLog(LOG, "monitorTimeout", "Trying to add %+v to commandIndex: %v channel", res, commandIndex)
-		ch <- res
-		kv.debugLog(LOG, "monitorTimeout", "Added %+v to commandIndex: %v channel", res, commandIndex)
-	}
-}
-
-func (kv *KVServer) fetchApplyMsg() {
-	for !kv.killed() {
-		select {
-		case applyMsg := <-kv.applyCh:
-			kv.mu.Lock()
-			kv.debugLog(LOG, "fetchApplyMsg", "Got apply message: %+v", applyMsg)
-			if applyMsg.CommandValid {
-				command := applyMsg.Command.(Op)
-				res := QueryResponse{}
-				res.sequenceNum = command.SequenceNum
-				switch command.OpType {
-				case GET:
-					res.value, res.err = kv.storage.get(command.Key)
-				case PUT:
-					res.err = kv.storage.put(command.Key, command.Value)
-				case APPEND:
-					res.err = kv.storage.append(command.Key, command.Value)
-				}
-
-				ch, prs := kv.commandResponse[applyMsg.CommandIndex]
-				kv.mu.Unlock()
-				if prs {
-					kv.debugLog(LOG, "fetchApplyMsg", "Trying to add %+v to commandIndex: %v channel", res, applyMsg.CommandIndex)
-					ch <- res
-					kv.debugLog(LOG, "fetchApplyMsg", "Added %+v to commandIndex: %v channel", res, applyMsg.CommandIndex)
-				}
-			}
-		case <-kv.killedChan:
+			kv.debugLog(LOG, "GetHandler", "Stop: server killed")
 			return
 		}
 	}
@@ -167,7 +116,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	kv.mu.Lock()
 	kv.debugLog(LOG, "PutAppendHandler", "Got putAppend request, args: %+v", args)
-	latestRes, executed := kv.checkLatestOp(args.ClientID, args.SequenceNum)
+	latestRes, executed := kv.checkLatestRes(args.ClientID, args.SequenceNum)
 	if executed {
 		reply.Err = latestRes.err
 		kv.debugLog(LOG, "PutAppendHandler", "Request already handled, reply: %+v", reply)
@@ -180,33 +129,90 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	command.OpType = args.Op
 	command.SequenceNum = args.SequenceNum
 	command.ClientID = args.ClientID
+	kv.debugLog(LOG, "PutAppendHandler", "--------blocked by start?????")
 	commandIndex, _, isLeader := kv.rf.Start(command)
+	kv.debugLog(LOG, "PutAppendHandler", "--------No!!!!")
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		kv.debugLog(LOG, "PutAppendHandler", "Current server is not leader, reply: %+v", reply)
 		kv.mu.Unlock()
 		return
 	} else {
+		kv.debugLog(LOG, "PutAppendHandler", "Accepted command: %+v, commandIndex: %v, trying to get response from raft", command, commandIndex)
 		ch := make(chan QueryResponse)
 		kv.commandResponse[commandIndex] = ch
-		go kv.monitorTimeout(commandIndex)
 		kv.mu.Unlock()
 		select {
 		case res := <-ch:
 			kv.mu.Lock()
-			defer kv.mu.Unlock()
-			if res.timeOut {
-				reply.Err = ErrWrongLeader
-				delete(kv.commandResponse, commandIndex)
-				kv.debugLog(LOG, "PutAppendHandler", "process command: %+v failed because of timeout, reply: %+v", command, reply)
-				return
-			}
 			reply.Err = res.err
-			kv.clientLatestResponse[args.ClientID] = res
 			delete(kv.commandResponse, commandIndex)
 			kv.debugLog(LOG, "PutAppendHandler", "process command: %+v succeed, current storage: %+v, reply: %+v", command, kv.storage, reply)
+			kv.mu.Unlock()
+			return
+		case <-time.After(5 * time.Second):
+			kv.processTimeout(commandIndex)
+			reply.Err = ErrWrongLeader
 			return
 		case <-kv.killedChan:
+			kv.debugLog(LOG, "PutAppendHandler", "Stop: server killed")
+			return
+		}
+	}
+}
+
+func (kv *KVServer) processTimeout(commandIndex int) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	_, prs := kv.commandResponse[commandIndex]
+	if !prs {
+		return
+	}
+	delete(kv.commandResponse, commandIndex)
+	kv.debugLog(LOG, "processTimeout", "Timeout: delete channel with commandIndex: %v", commandIndex)
+}
+
+func (kv *KVServer) fetchApplyMsg() {
+	for !kv.killed() {
+		select {
+		case applyMsg := <-kv.applyCh:
+			kv.debugLog(LOG, "fetchApplyMsg", "Got apply message: %+v", applyMsg)
+			if applyMsg.CommandValid {
+				kv.mu.Lock()
+				command := applyMsg.Command.(Op)
+				res := QueryResponse{}
+				res.sequenceNum = command.SequenceNum
+				ch, prs := kv.commandResponse[applyMsg.CommandIndex]
+				latestRes, executed := kv.checkLatestRes(command.ClientID, command.SequenceNum)
+
+				if executed {
+					kv.debugLog(LOG, "fetchApplyMsg", "Command %+v executed, push buffered response :%v to channel", command, latestRes)
+					kv.mu.Unlock()
+					if prs {
+						ch <- latestRes
+					}
+					return
+				}
+
+				switch command.OpType {
+				case GET:
+					res.value, res.err = kv.storage.get(command.Key)
+				case PUT:
+					res.err = kv.storage.put(command.Key, command.Value)
+				case APPEND:
+					res.err = kv.storage.append(command.Key, command.Value)
+				}
+				kv.clientLatestResponse[command.ClientID] = res
+
+				kv.mu.Unlock()
+				if prs {
+					kv.debugLog(LOG, "fetchApplyMsg", "Trying to add %+v to commandIndex: %v channel", res, applyMsg.CommandIndex)
+					ch <- res
+					kv.debugLog(LOG, "fetchApplyMsg", "Added %+v to commandIndex: %v channel", res, applyMsg.CommandIndex)
+				}
+			}
+		case <-kv.killedChan:
+			kv.debugLog(LOG, "fetchApplyMsg", "Stop: server killed")
 			return
 		}
 	}
@@ -226,8 +232,7 @@ func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
-	var signal interface{}
-	kv.killedChan <- signal
+	close(kv.killedChan)
 }
 
 func (kv *KVServer) killed() bool {
