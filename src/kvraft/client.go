@@ -47,6 +47,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 //
+
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
@@ -54,15 +55,16 @@ func (ck *Clerk) Get(key string) string {
 	//currentLeader := ck.currentLeader
 	//ck.mu.Unlock()
 	serverID := ck.currentLeader
-
 	for {
-		getArgs := GetArgs{}
+		getArgs := OperationArgs{}
 		getArgs.Key = key
+		getArgs.OpID = nrand()
+		getArgs.OpType = GET
 		getArgs.ClientID = ck.me
 		getArgs.SequenceNum = ck.sequenceNum
-		getReply := GetReply{}
+		getReply := OperationReply{}
 		ck.debugLog(LOG, "Get", "Sending get RPC to server %v, args: %+v", serverID, getArgs)
-		ok := ck.servers[serverID].Call("KVServer.Get", &getArgs, &getReply)
+		ok := ck.servers[serverID].Call("KVServer.OperationHandler", &getArgs, &getReply)
 
 		if !ok || getReply.Err == ErrWrongLeader {
 			if !ok {
@@ -76,7 +78,6 @@ func (ck *Clerk) Get(key string) string {
 			if serverID == len(ck.servers) {
 				serverID = 0
 			}
-
 		} else {
 			ck.currentLeader = serverID
 			ck.sequenceNum += 1
@@ -107,16 +108,17 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	serverID := ck.currentLeader
 
 	for {
-		putAppendArgs := PutAppendArgs{}
+		putAppendArgs := OperationArgs{}
 		putAppendArgs.Key = key
 		putAppendArgs.Value = value
-		putAppendArgs.Op = op
+		putAppendArgs.OpType = op
+		putAppendArgs.OpID = nrand()
 		putAppendArgs.ClientID = ck.me
 		putAppendArgs.SequenceNum = ck.sequenceNum
 
-		putAppendReply := PutAppendReply{}
+		putAppendReply := OperationReply{}
 		ck.debugLog(LOG, "PutAppend", "Sending putAppend RPC to server %v, args: %+v", serverID, putAppendArgs)
-		ok := ck.servers[serverID].Call("KVServer.PutAppend", &putAppendArgs, &putAppendReply)
+		ok := ck.servers[serverID].Call("KVServer.OperationHandler", &putAppendArgs, &putAppendReply)
 
 		if !ok || putAppendReply.Err == ErrWrongLeader {
 			if !ok {
@@ -131,8 +133,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			}
 		} else {
 			ck.currentLeader = serverID
-			ck.debugLog(LOG, "PutAppend", "Succeed to process PutAppend request on server %v", serverID)
 			ck.sequenceNum += 1
+			ck.debugLog(LOG, "PutAppend", "Succeed to process PutAppend request on server %v", serverID)
 			return
 		}
 	}

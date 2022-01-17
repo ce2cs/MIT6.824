@@ -17,7 +17,7 @@ const (
 	LOG   = "LOG"
 )
 
-const DEBUG = true
+const DEBUG = false
 
 type Err string
 
@@ -45,6 +45,20 @@ type GetArgs struct {
 }
 
 type GetReply struct {
+	Err   Err
+	Value string
+}
+
+type OperationArgs struct {
+	OpType      string
+	Key         string
+	Value       string
+	ClientID    int64
+	SequenceNum int
+	OpID        int64
+}
+
+type OperationReply struct {
 	Err   Err
 	Value string
 }
