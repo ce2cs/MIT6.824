@@ -6,6 +6,7 @@ import (
 	"6.824/raft"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,7 +41,7 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	commandResponse      map[int]chan QueryResponse
+	commandResponse      map[string]chan QueryResponse
 	clientLatestResponse map[int64]QueryResponse
 	storage              KVDatabase
 }
@@ -49,6 +50,7 @@ type QueryResponse struct {
 	value       string
 	err         Err
 	sequenceNum int
+	clientID    int64
 }
 
 func (kv *KVServer) checkLatestRes(clientID int64, sequenceNum int) (QueryResponse, bool) {
@@ -79,7 +81,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	command.SequenceNum = args.SequenceNum
 	command.ClientID = args.ClientID
 	kv.debugLog(LOG, "PutAppendHandler", "--------blocked by start?????")
-	commandIndex, _, isLeader := kv.rf.Start(command)
+	commandIndex, commandTerm, isLeader := kv.rf.Start(command)
+	commandKey := kv.generateCommandKey(commandIndex, commandTerm)
 	kv.debugLog(LOG, "PutAppendHandler", "--------No!!!!")
 	if !isLeader {
 		reply.Err = ErrWrongLeader
@@ -89,20 +92,27 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	} else {
 		kv.debugLog(LOG, "GetHandler", "Accepted command: %+v, commandIndex: %v, trying to get response from raft", command, commandIndex)
 		ch := make(chan QueryResponse)
-		kv.commandResponse[commandIndex] = ch
+		kv.commandResponse[commandKey] = ch
 		kv.mu.Unlock()
 		select {
 		case res := <-ch:
 			kv.mu.Lock()
-			reply.Value = res.value
-			reply.Err = res.err
-			delete(kv.commandResponse, commandIndex)
+			if res.sequenceNum != command.SequenceNum || res.clientID != command.ClientID {
+				reply.Err = ErrWrongLeader
+			} else {
+				reply.Value = res.value
+				reply.Err = res.err
+			}
+			delete(kv.commandResponse, commandKey)
 			kv.debugLog(LOG, "GetHandler", "process command: %+v succeed, current storage: %+v, reply: %+v", command, kv.storage, reply)
 			kv.mu.Unlock()
 			return
 		case <-time.After(5 * time.Second):
-			kv.processTimeout(commandIndex)
+			kv.processTimeout(commandKey)
 			reply.Err = ErrWrongLeader
+			kv.mu.Lock()
+			delete(kv.commandResponse, commandKey)
+			kv.mu.Unlock()
 			return
 		case <-kv.killedChan:
 			kv.debugLog(LOG, "GetHandler", "Stop: server killed")
@@ -130,7 +140,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	command.SequenceNum = args.SequenceNum
 	command.ClientID = args.ClientID
 	kv.debugLog(LOG, "PutAppendHandler", "--------blocked by start?????")
-	commandIndex, _, isLeader := kv.rf.Start(command)
+	commandIndex, commandTerm, isLeader := kv.rf.Start(command)
+	commandKey := kv.generateCommandKey(commandIndex, commandTerm)
 	kv.debugLog(LOG, "PutAppendHandler", "--------No!!!!")
 	if !isLeader {
 		reply.Err = ErrWrongLeader
@@ -140,19 +151,26 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	} else {
 		kv.debugLog(LOG, "PutAppendHandler", "Accepted command: %+v, commandIndex: %v, trying to get response from raft", command, commandIndex)
 		ch := make(chan QueryResponse)
-		kv.commandResponse[commandIndex] = ch
+		kv.commandResponse[commandKey] = ch
 		kv.mu.Unlock()
 		select {
 		case res := <-ch:
 			kv.mu.Lock()
-			reply.Err = res.err
-			delete(kv.commandResponse, commandIndex)
+			if res.sequenceNum != command.SequenceNum || res.clientID != command.ClientID {
+				reply.Err = ErrWrongLeader
+			} else {
+				reply.Err = res.err
+			}
+			delete(kv.commandResponse, commandKey)
 			kv.debugLog(LOG, "PutAppendHandler", "process command: %+v succeed, current storage: %+v, reply: %+v", command, kv.storage, reply)
 			kv.mu.Unlock()
 			return
 		case <-time.After(5 * time.Second):
-			kv.processTimeout(commandIndex)
+			kv.processTimeout(commandKey)
 			reply.Err = ErrWrongLeader
+			kv.mu.Lock()
+			delete(kv.commandResponse, commandKey)
+			kv.mu.Unlock()
 			return
 		case <-kv.killedChan:
 			kv.debugLog(LOG, "PutAppendHandler", "Stop: server killed")
@@ -161,15 +179,15 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 }
 
-func (kv *KVServer) processTimeout(commandIndex int) {
+func (kv *KVServer) processTimeout(commandKey string) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	_, prs := kv.commandResponse[commandIndex]
+	_, prs := kv.commandResponse[commandKey]
 	if !prs {
 		return
 	}
-	delete(kv.commandResponse, commandIndex)
-	kv.debugLog(LOG, "processTimeout", "Timeout: delete channel with commandIndex: %v", commandIndex)
+	delete(kv.commandResponse, commandKey)
+	kv.debugLog(LOG, "processTimeout", "Timeout: delete channel with commandKey: %v", commandKey)
 }
 
 func (kv *KVServer) fetchApplyMsg() {
@@ -182,14 +200,19 @@ func (kv *KVServer) fetchApplyMsg() {
 				command := applyMsg.Command.(Op)
 				res := QueryResponse{}
 				res.sequenceNum = command.SequenceNum
-				ch, prs := kv.commandResponse[applyMsg.CommandIndex]
+				currentTerm, isLeader := kv.rf.GetState()
+				commandKey := kv.generateCommandKey(applyMsg.CommandIndex, currentTerm)
+				ch, prs := kv.commandResponse[commandKey]
 				latestRes, executed := kv.checkLatestRes(command.ClientID, command.SequenceNum)
 
 				if executed {
-					kv.debugLog(LOG, "fetchApplyMsg", "Command %+v executed, push buffered response :%v to channel", command, latestRes)
+					kv.debugLog(LOG, "fetchApplyMsg", "Command %+v executed, push buffered response :%v to channel with commandIndex :%v",
+						command, latestRes, applyMsg.CommandIndex)
 					kv.mu.Unlock()
-					if prs {
+					if prs && isLeader {
+						log.Printf("Blocked by executed channel with commandIndex %v?", applyMsg.CommandIndex)
 						ch <- latestRes
+						log.Printf("Not Blocked by executed channel with commandIndex %v", applyMsg.CommandIndex)
 					}
 					return
 				}
@@ -205,7 +228,7 @@ func (kv *KVServer) fetchApplyMsg() {
 				kv.clientLatestResponse[command.ClientID] = res
 
 				kv.mu.Unlock()
-				if prs {
+				if prs && isLeader {
 					kv.debugLog(LOG, "fetchApplyMsg", "Trying to add %+v to commandIndex: %v channel", res, applyMsg.CommandIndex)
 					ch <- res
 					kv.debugLog(LOG, "fetchApplyMsg", "Added %+v to commandIndex: %v channel", res, applyMsg.CommandIndex)
@@ -271,7 +294,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv.killedChan = make(chan interface{})
 	kv.storage = *NewKVDB()
-	kv.commandResponse = make(map[int]chan QueryResponse)
+	kv.commandResponse = make(map[string]chan QueryResponse)
 	kv.clientLatestResponse = make(map[int64]QueryResponse)
 	go kv.fetchApplyMsg()
 	return kv
@@ -286,4 +309,8 @@ func (kv *KVServer) debugLog(logType string, funcName string, format string, inf
 		logType,
 		funcName)
 	log.Printf(prefix+format, info...)
+}
+
+func (kv *KVServer) generateCommandKey(commandIndex int, commandTerm int) string {
+	return strconv.Itoa(commandIndex) + "-" + strconv.Itoa(commandTerm)
 }

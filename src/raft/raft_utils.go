@@ -26,7 +26,7 @@ func (p DebugPart) String() string {
 	return parts[i]
 }
 
-const DEBUG = true
+const DEBUG = false
 const DEBUG_PART = ALL
 
 const COUNT_RPC = false
@@ -124,10 +124,6 @@ func (rf *Raft) checkAndSetTerm(term int) {
 		rf.votedFor = -1
 		rf.becomeFollower()
 	}
-}
-
-func (rf *Raft) addToApplyBufferChannel(msg ApplyMsg) {
-	rf.applyBufferChannel <- msg
 }
 
 func (rf *Raft) fetchFromBufferToChannel() {
