@@ -29,8 +29,7 @@ func (rf *Raft) prepareRequestVoteArgs(requestVoteArgs *RequestVoteArgs) {
 	requestVoteArgs.CandidateID = rf.me
 	requestVoteArgs.Term = rf.currentTerm
 	requestVoteArgs.LastLogIndex = rf.log.getLastIndex()
-	requestVoteArgs.LastLogTerm = rf.log.getLogTermByIndex(requestVoteArgs.LastLogIndex)
-
+	requestVoteArgs.LastLogTerm = Max(rf.log.getLogTermByIndex(requestVoteArgs.LastLogIndex), rf.lastIncludedIndex)
 	// debug info
 	requestVoteArgs.Idx = rf.requestVoteRPCIdx
 	rf.requestVoteRPCIdx += 1
@@ -45,7 +44,8 @@ func (rf *Raft) RequestVoteHandler(args *RequestVoteArgs, reply *RequestVoteRepl
 	rf.checkAndSetTerm(args.Term)
 	reply.Term = rf.currentTerm
 	lastEntryIndex := rf.log.getLastIndex()
-	lastEntryTerm := rf.log.getLogTermByIndex(lastEntryIndex)
+	lastEntryTerm := Max(rf.lastIncludedIndex, rf.log.getLogTermByIndex(lastEntryIndex))
+
 	rf.debugLog(Lab2A, LOG, "RequestVoteHandler", "last log index: %v, vote requester last log index: %v",
 		rf.log.getLastIndex(), args.LastLogIndex)
 	if args.Term < rf.currentTerm {

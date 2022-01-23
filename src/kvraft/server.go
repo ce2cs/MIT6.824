@@ -4,6 +4,7 @@ import (
 	"6.824/labgob"
 	"6.824/labrpc"
 	"6.824/raft"
+	"bytes"
 	"fmt"
 	"log"
 	"strconv"
@@ -44,18 +45,24 @@ type KVServer struct {
 	waitingResponse      map[int64]chan QueryResponse
 	clientLatestResponse map[int64]QueryResponse
 	storage              KVDatabase
+
+	//Snapshot
+	lastExecutedCommandIdx int
+	persister              *raft.Persister
 }
 
 type QueryResponse struct {
-	value       string
-	err         Err
-	sequenceNum int
-	clientID    int64
+	Value       string
+	Error       Err
+	SequenceNum int
+	ClientID    int64
 }
 
 func (kv *KVServer) checkLatestRes(clientID int64, sequenceNum int) (QueryResponse, bool) {
 	latestRes, prs := kv.clientLatestResponse[clientID]
-	if prs && sequenceNum == latestRes.sequenceNum {
+	kv.debugLog(LOG, "checkLatestRes", "clientID: %v, sequenceNum: %v, latestRes: %+v",
+		clientID, sequenceNum, latestRes)
+	if prs && sequenceNum == latestRes.SequenceNum {
 		return kv.clientLatestResponse[clientID], true
 	} else {
 		return QueryResponse{}, false
@@ -69,8 +76,8 @@ func (kv *KVServer) OperationHandler(args *OperationArgs, reply *OperationReply)
 	kv.debugLog(LOG, "OperationHandler", "Got operation request, args: %+v", args)
 
 	if latestRes, executed := kv.checkLatestRes(args.ClientID, args.SequenceNum); executed {
-		reply.Value = latestRes.value
-		reply.Err = latestRes.err
+		reply.Value = latestRes.Value
+		reply.Err = latestRes.Error
 		kv.debugLog(LOG, "OperationHandler", "Operation already handled, reply: %+v", reply)
 		return
 	}
@@ -92,8 +99,8 @@ func (kv *KVServer) OperationHandler(args *OperationArgs, reply *OperationReply)
 	select {
 	case res := <-ch:
 		kv.mu.Lock()
-		reply.Value = res.value
-		reply.Err = res.err
+		reply.Value = res.Value
+		reply.Err = res.Error
 		delete(kv.waitingResponse, args.OpID)
 		kv.debugLog(LOG, "OperationHandler", "process args: %+v succeed, current storage: %+v, reply: %+v", args, kv.storage, reply)
 		return
@@ -116,39 +123,79 @@ func (kv *KVServer) fetchApplyMsg() {
 		case applyMsg := <-kv.applyCh:
 			kv.debugLog(LOG, "fetchApplyMsg", "Got apply message: %+v", applyMsg)
 			if applyMsg.CommandValid {
-				kv.mu.Lock()
-				opArgs := applyMsg.Command.(OperationArgs)
 				res := QueryResponse{}
-				res.sequenceNum = opArgs.SequenceNum
-				latestRes, executed := kv.checkLatestRes(opArgs.ClientID, opArgs.SequenceNum)
-				ch, prs := kv.waitingResponse[opArgs.OpID]
-				if executed {
-					kv.debugLog(LOG, "fetchApplyMsg", "opArgs: %+v executed, push buffered response :%v to channel with commandIndex :%v",
-						opArgs, latestRes, applyMsg.CommandIndex)
-				} else {
-					switch opArgs.OpType {
-					case GET:
-						res.value, res.err = kv.storage.get(opArgs.Key)
-					case PUT:
-						res.err = kv.storage.put(opArgs.Key, opArgs.Value)
-					case APPEND:
-						res.err = kv.storage.append(opArgs.Key, opArgs.Value)
-					}
-				}
-				kv.clientLatestResponse[opArgs.ClientID] = res
-				// TODO : need to verify current raft server is leader?????
-				kv.mu.Unlock()
+				ch, prs := kv.processCommandMsgWithLock(applyMsg, &res)
 				if prs {
 					kv.debugLog(LOG, "fetchApplyMsg", "Trying to add %+v to commandIndex: %v channel", res, applyMsg.CommandIndex)
 					ch <- res
 					kv.debugLog(LOG, "fetchApplyMsg", "Added %+v to commandIndex: %v channel", res, applyMsg.CommandIndex)
 				}
+			} else if applyMsg.SnapshotValid {
+				kv.processSnapshotMsgWithLock(applyMsg)
 			}
 		case <-kv.killedChan:
 			kv.debugLog(LOG, "fetchApplyMsg", "Stop: server killed")
 			return
 		}
 	}
+}
+func (kv *KVServer) saveSnapshot() {
+	kv.debugLog(LOG, "saveSnapshot", "log size exceed save snapshot")
+	writer := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(writer)
+	encoder.Encode(kv.storage)
+	encoder.Encode(kv.clientLatestResponse)
+	snapshot := writer.Bytes()
+	kv.rf.Snapshot(kv.lastExecutedCommandIdx, snapshot)
+}
+
+func (kv *KVServer) processCommandMsgWithLock(commandMsg raft.ApplyMsg, res *QueryResponse) (chan QueryResponse, bool) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	opArgs := commandMsg.Command.(OperationArgs)
+	res.SequenceNum = opArgs.SequenceNum
+	res.ClientID = opArgs.ClientID
+	latestRes, executed := kv.checkLatestRes(opArgs.ClientID, opArgs.SequenceNum)
+	if executed {
+		res = &latestRes
+		kv.debugLog(LOG, "processCommandMsgWithLock", "opArgs: %+v executed, push buffered response :%v to channel with commandIndex :%v",
+			opArgs, latestRes, commandMsg.CommandIndex)
+	} else {
+		switch opArgs.OpType {
+		case GET:
+			res.Value, res.Error = kv.storage.get(opArgs.Key)
+		case PUT:
+			res.Error = kv.storage.put(opArgs.Key, opArgs.Value)
+		case APPEND:
+			res.Error = kv.storage.append(opArgs.Key, opArgs.Value)
+		}
+		kv.debugLog(LOG, "processCommandMsgWithLock", "last executed command index updated from %v to %v",
+			kv.lastExecutedCommandIdx, commandMsg.CommandIndex)
+		kv.lastExecutedCommandIdx = commandMsg.CommandIndex
+	}
+	kv.clientLatestResponse[opArgs.ClientID] = *res
+	// TODO : need to verify current raft server is leader?????
+	ch, prs := kv.waitingResponse[opArgs.OpID]
+
+	kv.debugLog(LOG, "processCommandMsgWithLock", "maxraftstate : %v, raftStateSize: %v",
+		kv.maxraftstate, kv.persister.RaftStateSize())
+	if kv.maxraftstate > 0 && kv.maxraftstate < kv.persister.RaftStateSize() {
+		kv.saveSnapshot()
+	}
+
+	return ch, prs
+}
+
+func (kv *KVServer) processSnapshotMsgWithLock(snapshotMsg raft.ApplyMsg) {
+	kv.debugLog(LOG, "processSnapshotMsgWithLock", "got snapshotMsg : %+v", snapshotMsg)
+	installed := kv.rf.CondInstallSnapshot(snapshotMsg.SnapshotTerm, snapshotMsg.SnapshotIndex, snapshotMsg.Snapshot)
+	if !installed {
+		return
+	}
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	kv.readSnapshot()
+	kv.lastExecutedCommandIdx = snapshotMsg.SnapshotIndex
 }
 
 //
@@ -201,14 +248,35 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
-	// You may need initialization code here.
+	kv.persister = persister
 	kv.killedChan = make(chan interface{})
 	kv.storage = *NewKVDB()
 	kv.waitingResponse = make(map[int64]chan QueryResponse)
 	kv.clientLatestResponse = make(map[int64]QueryResponse)
+	kv.readSnapshot()
 	go kv.fetchApplyMsg()
 	return kv
+}
+
+func (kv *KVServer) readSnapshot() {
+	kv.debugLog(LOG, "readSnapshot", "Read snapshot")
+	snapshot := kv.persister.ReadSnapshot()
+	if snapshot == nil || len(snapshot) < 1 {
+		kv.debugLog(LOG, "readSnapshot", "Nothing need to restore")
+		return
+	}
+	var storage KVDatabase
+	var clientLatestRes map[int64]QueryResponse
+	reader := bytes.NewBuffer(snapshot)
+	decoder := labgob.NewDecoder(reader)
+	if decoder.Decode(&storage) != nil {
+		kv.debugLog(ERROR, "readSnapshot", "Failed to decode snapshot")
+	}
+	if decoder.Decode(&clientLatestRes) != nil {
+		kv.debugLog(ERROR, "readSnapshot", "Failed to decode latest response")
+	}
+	kv.storage = storage
+	kv.clientLatestResponse = clientLatestRes
 }
 
 func (kv *KVServer) debugLog(logType string, funcName string, format string, info ...interface{}) {

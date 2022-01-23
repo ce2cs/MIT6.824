@@ -269,6 +269,12 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 		"Saved snapshot, lastIncludedTerm: %v, lastIncludedIndex: %v, snapshot: %v, logs: %+v",
 		lastIncludedIndex, lastIncludedTerm, snapshot, rf.log)
 	rf.persister.SaveStateAndSnapshot(state, snapshot)
+
+	// TODO verify the correctness of this step:
+	if rf.log.getLength() > 0 {
+		return false
+	}
+
 	return true
 }
 
@@ -306,6 +312,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 			rf.lastIncludedIndex)
 		return
 	}
+	rf.debugLog(Lab2D, LOG, "Snapshot", "lastIncludedIndex update from %v to %v, lastIncludedTerm from %v to %v",
+		rf.lastIncludedIndex, index, rf.lastIncludedTerm, rf.log.getLogTermByIndex(index))
 	rf.lastIncludedIndex = index
 	rf.lastIncludedTerm = rf.log.getLogTermByIndex(rf.lastIncludedIndex)
 	rf.debugLog(Lab2D, LOG, "Snapshot", "Before delete logs: %+v", rf.log)
@@ -611,7 +619,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	rf.applyBufferChannel = make(chan ApplyMsg, 1000)
+	rf.applyBufferChannel = make(chan ApplyMsg, 100)
 	go rf.ticker()
 	go rf.fetchFromBufferToChannel()
 

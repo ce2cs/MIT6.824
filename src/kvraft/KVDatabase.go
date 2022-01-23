@@ -1,11 +1,11 @@
 package kvraft
 
 type KVDatabase struct {
-	data map[string]string
+	Data map[string]string
 }
 
 func (kvd *KVDatabase) get(key string) (string, Err) {
-	value, prs := kvd.data[key]
+	value, prs := kvd.Data[key]
 	if !prs {
 		return "", ErrNoKey
 	}
@@ -13,21 +13,21 @@ func (kvd *KVDatabase) get(key string) (string, Err) {
 }
 
 func (kvd *KVDatabase) append(key string, value string) Err {
-	_, prs := kvd.data[key]
+	_, prs := kvd.Data[key]
 	if !prs {
 		return kvd.put(key, value)
 	}
-	kvd.data[key] += value
+	kvd.Data[key] += value
 	return OK
 }
 
 func (kvd *KVDatabase) put(key string, value string) Err {
-	kvd.data[key] = value
+	kvd.Data[key] = value
 	return OK
 }
 
 func NewKVDB() *KVDatabase {
 	kvd := KVDatabase{}
-	kvd.data = make(map[string]string)
+	kvd.Data = make(map[string]string)
 	return &kvd
 }
