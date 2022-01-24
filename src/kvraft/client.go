@@ -158,4 +158,5 @@ func (ck *Clerk) debugLog(logType string, funcName string, format string, info .
 		ck.currentLeader,
 		ck.sequenceNum)
 	log.Printf(prefix+format, info...)
+	fmt.Printf("\n")
 }

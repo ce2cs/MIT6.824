@@ -110,6 +110,7 @@ func (rf *Raft) debugLog(part DebugPart, logType string, funcName string, format
 			rf.identity,
 			funcName)
 		log.Printf(prefix+format, a...)
+		fmt.Printf("\n")
 	}
 }
 

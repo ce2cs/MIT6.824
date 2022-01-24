@@ -17,7 +17,7 @@ const (
 	LOG   = "LOG"
 )
 
-const DEBUG = true
+const DEBUG = false
 
 type Err string
 

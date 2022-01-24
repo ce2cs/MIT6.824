@@ -121,18 +121,21 @@ func (kv *KVServer) fetchApplyMsg() {
 	for !kv.killed() {
 		select {
 		case applyMsg := <-kv.applyCh:
+			// important! when process command need to be serialize
+			kv.mu.Lock()
 			kv.debugLog(LOG, "fetchApplyMsg", "Got apply message: %+v", applyMsg)
 			if applyMsg.CommandValid {
 				res := QueryResponse{}
-				ch, prs := kv.processCommandMsgWithLock(applyMsg, &res)
+				ch, prs := kv.processCommandMsg(applyMsg, &res)
 				if prs {
 					kv.debugLog(LOG, "fetchApplyMsg", "Trying to add %+v to commandIndex: %v channel", res, applyMsg.CommandIndex)
 					ch <- res
 					kv.debugLog(LOG, "fetchApplyMsg", "Added %+v to commandIndex: %v channel", res, applyMsg.CommandIndex)
 				}
 			} else if applyMsg.SnapshotValid {
-				kv.processSnapshotMsgWithLock(applyMsg)
+				kv.processSnapshotMsg(applyMsg)
 			}
+			kv.mu.Unlock()
 		case <-kv.killedChan:
 			kv.debugLog(LOG, "fetchApplyMsg", "Stop: server killed")
 			return
@@ -149,9 +152,7 @@ func (kv *KVServer) saveSnapshot() {
 	kv.rf.Snapshot(kv.lastExecutedCommandIdx, snapshot)
 }
 
-func (kv *KVServer) processCommandMsgWithLock(commandMsg raft.ApplyMsg, res *QueryResponse) (chan QueryResponse, bool) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
+func (kv *KVServer) processCommandMsg(commandMsg raft.ApplyMsg, res *QueryResponse) (chan QueryResponse, bool) {
 	opArgs := commandMsg.Command.(OperationArgs)
 	res.SequenceNum = opArgs.SequenceNum
 	res.ClientID = opArgs.ClientID
@@ -186,15 +187,19 @@ func (kv *KVServer) processCommandMsgWithLock(commandMsg raft.ApplyMsg, res *Que
 	return ch, prs
 }
 
-func (kv *KVServer) processSnapshotMsgWithLock(snapshotMsg raft.ApplyMsg) {
-	kv.debugLog(LOG, "processSnapshotMsgWithLock", "got snapshotMsg : %+v", snapshotMsg)
-	installed := kv.rf.CondInstallSnapshot(snapshotMsg.SnapshotTerm, snapshotMsg.SnapshotIndex, snapshotMsg.Snapshot)
-	if !installed {
+func (kv *KVServer) processSnapshotMsg(snapshotMsg raft.ApplyMsg) {
+	kv.debugLog(LOG, "processSnapshotMsgWithLock", "got snapshotMsg index: %v, term: %v", snapshotMsg.SnapshotIndex, snapshotMsg.SnapshotTerm)
+	if kv.lastExecutedCommandIdx >= snapshotMsg.SnapshotIndex {
+		kv.debugLog(LOG, "processSnapshotMsgWithLock", "Snapshot outdated: have new apply msg")
 		return
 	}
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
+	installed := kv.rf.CondInstallSnapshot(snapshotMsg.SnapshotTerm, snapshotMsg.SnapshotIndex, snapshotMsg.Snapshot)
+	if !installed {
+		kv.debugLog(LOG, "processSnapshotMsgWithLock", "Snapshot outdated")
+		return
+	}
 	kv.readSnapshot()
+	kv.debugLog(LOG, "processSnapshotMsgWithLock", "Snapshot outdated")
 	kv.lastExecutedCommandIdx = snapshotMsg.SnapshotIndex
 }
 
@@ -277,6 +282,8 @@ func (kv *KVServer) readSnapshot() {
 	}
 	kv.storage = storage
 	kv.clientLatestResponse = clientLatestRes
+	kv.debugLog(LOG, "readSnapshot", "Succeed to read snapshot, current storage: %+v, latestClientRes: %+v",
+		kv.storage, kv.clientLatestResponse)
 }
 
 func (kv *KVServer) debugLog(logType string, funcName string, format string, info ...interface{}) {
@@ -288,6 +295,7 @@ func (kv *KVServer) debugLog(logType string, funcName string, format string, inf
 		logType,
 		funcName)
 	log.Printf(prefix+format, info...)
+	fmt.Printf("\n")
 }
 
 func (kv *KVServer) generateCommandKey(commandIndex int, commandTerm int) string {

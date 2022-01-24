@@ -238,8 +238,8 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.debugLog(Lab2D, LOG, "CondInstallSnapshot",
-		"Got InstallSnapshot request, lastIncludedTerm: %v, lastIncludedIndex: %v, snapshot: %v, log: %v",
-		lastIncludedTerm, lastIncludedIndex, snapshot, rf.log)
+		"Got InstallSnapshot request, lastIncludedTerm: %v, lastIncludedIndex: %v, current log: %v",
+		lastIncludedTerm, lastIncludedIndex, rf.log)
 
 	if lastIncludedIndex <= rf.lastIncludedIndex {
 		rf.debugLog(Lab2D, LOG, "CondInstallSnapshot",
@@ -266,15 +266,9 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 
 	state := rf.preparePersistState()
 	rf.debugLog(Lab2D, LOG, "CondInstallSnapshot",
-		"Saved snapshot, lastIncludedTerm: %v, lastIncludedIndex: %v, snapshot: %v, logs: %+v",
-		lastIncludedIndex, lastIncludedTerm, snapshot, rf.log)
+		"Saved snapshot, lastIncludedTerm: %v, lastIncludedIndex: %v, logs: %+v",
+		lastIncludedIndex, lastIncludedTerm, rf.log)
 	rf.persister.SaveStateAndSnapshot(state, snapshot)
-
-	// TODO verify the correctness of this step:
-	if rf.log.getLength() > 0 {
-		return false
-	}
-
 	return true
 }
 
@@ -320,8 +314,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.log.deleteUntilIndex(index + 1)
 	rf.log.StartIdx = rf.lastIncludedIndex + 1
 	rf.debugLog(Lab2D, LOG, "Snapshot", "saved snapshot, "+
-		"current lastIncludedIndex: %v, lastIncludedTerm: %v, logs: %+v, snapshot: %v",
-		rf.lastIncludedIndex, rf.lastIncludedTerm, rf.log, snapshot)
+		"current lastIncludedIndex: %v, lastIncludedTerm: %v, logs: %+v",
+		rf.lastIncludedIndex, rf.lastIncludedTerm, rf.log)
 	state := rf.preparePersistState()
 	rf.persister.SaveStateAndSnapshot(state, snapshot)
 }
