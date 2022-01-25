@@ -241,7 +241,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 		"Got InstallSnapshot request, lastIncludedTerm: %v, lastIncludedIndex: %v, current log: %v",
 		lastIncludedTerm, lastIncludedIndex, rf.log)
 
-	if lastIncludedIndex <= rf.lastIncludedIndex {
+	if lastIncludedIndex <= rf.lastApplied {
 		rf.debugLog(Lab2D, LOG, "CondInstallSnapshot",
 			"refuse old snapshot")
 		return false
@@ -266,7 +266,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 
 	state := rf.preparePersistState()
 	rf.debugLog(Lab2D, LOG, "CondInstallSnapshot",
-		"Saved snapshot, lastIncludedTerm: %v, lastIncludedIndex: %v, logs: %+v",
+		"Saved snapshot, lastIncludedIndex: %v, lastIncludedTerm: %v, logs: %+v",
 		lastIncludedIndex, lastIncludedTerm, rf.log)
 	rf.persister.SaveStateAndSnapshot(state, snapshot)
 	return true

@@ -162,6 +162,10 @@ func (kv *KVServer) processCommandMsg(commandMsg raft.ApplyMsg, res *QueryRespon
 		kv.debugLog(LOG, "processCommandMsgWithLock", "opArgs: %+v executed, push buffered response :%v to channel with commandIndex :%v",
 			opArgs, latestRes, commandMsg.CommandIndex)
 	} else {
+		if commandMsg.CommandIndex < kv.lastExecutedCommandIdx+1 {
+			//log.Printf("commandIndex wrong!")
+			return nil, false
+		}
 		switch opArgs.OpType {
 		case GET:
 			res.Value, res.Error = kv.storage.get(opArgs.Key)
@@ -172,6 +176,11 @@ func (kv *KVServer) processCommandMsg(commandMsg raft.ApplyMsg, res *QueryRespon
 		}
 		kv.debugLog(LOG, "processCommandMsgWithLock", "last executed command index updated from %v to %v",
 			kv.lastExecutedCommandIdx, commandMsg.CommandIndex)
+		if commandMsg.CommandIndex != kv.lastExecutedCommandIdx+1 && (opArgs.OpType == PUT || opArgs.OpType == APPEND) {
+			//log.Printf("commandIndex: %v, lastExecutedCommandIdx: %v", commandMsg.CommandIndex, kv.lastExecutedCommandIdx)
+			//log.Printf("op: %+v, current Storage: %+v", opArgs, kv.storage)
+			//log.Printf("Bug: commandIndex in not continuous!")
+		}
 		kv.lastExecutedCommandIdx = commandMsg.CommandIndex
 	}
 	kv.clientLatestResponse[opArgs.ClientID] = *res
@@ -199,7 +208,6 @@ func (kv *KVServer) processSnapshotMsg(snapshotMsg raft.ApplyMsg) {
 		return
 	}
 	kv.readSnapshot()
-	kv.debugLog(LOG, "processSnapshotMsgWithLock", "Snapshot outdated")
 	kv.lastExecutedCommandIdx = snapshotMsg.SnapshotIndex
 }
 
@@ -264,7 +272,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 }
 
 func (kv *KVServer) readSnapshot() {
-	kv.debugLog(LOG, "readSnapshot", "Read snapshot")
+	kv.debugLog(LOG, "readSnapshot", "Read snapshot, before: %+v", kv.storage)
 	snapshot := kv.persister.ReadSnapshot()
 	if snapshot == nil || len(snapshot) < 1 {
 		kv.debugLog(LOG, "readSnapshot", "Nothing need to restore")
@@ -290,10 +298,11 @@ func (kv *KVServer) debugLog(logType string, funcName string, format string, inf
 	if !DEBUG {
 		return
 	}
-	prefix := fmt.Sprintf("[server: %v][%v][%v]INFO: ",
+	prefix := fmt.Sprintf("[server: %v][%v][%v][lastExecutedCommandIdx: %v]INFO: ",
 		kv.me,
 		logType,
-		funcName)
+		funcName,
+		kv.lastExecutedCommandIdx)
 	log.Printf(prefix+format, info...)
 	fmt.Printf("\n")
 }
